@@ -21,6 +21,12 @@
 - 应用本体更新下载 GitHub Release 资产时，直链失败会自动回退到 `ghfast.top` / `gh-proxy.com` /
   `ghproxy.net` 加速镜像；更新时优先继承已安装的 Claude Code，不再重复下载。
 - **发行包确认不含 Claude Code 本体**；0.1.0 的旧二进制资产已撤回（旧构建误含 Claude Code），请使用 0.1.1。
+- 游戏模式界面语言：Steam 启动时 `LANG` 可能不是桌面会话的语言；`cccodroid-ui` 会读
+  `~/.config/plasma-localerc`，游戏模式和桌面模式显示同一种语言。
+- 游戏模式触摸板：`cccodroid steam add` 会给快捷方式装「Web Browser」手柄布局，触摸板当鼠标，
+  不用按住 Steam 键也能动光标。
+- 桌面任务栏图标：窗口的 WM_CLASS / Wayland app_id 设为 `cccodroid`，桌面条目加 `StartupWMClass`，
+  任务栏和切换器都用上游图标。
 
 ### 文档
 

@@ -166,6 +166,27 @@ def shortcut_appid(exe_quoted, name):
     return (zlib.crc32((exe_quoted + name).encode("utf-8")) & 0xFFFFFFFF) | 0x80000000
 
 
+def install_controller_layout(steam_dir, user, dry_run):
+    """给这个快捷方式装「Web Browser」手柄布局：触摸板当鼠标，不按住 Steam 键也能动光标。
+    已经有这个应用的布局（用户自己改过）就不覆盖。"""
+    tpl = os.path.join(steam_dir, "controller_base", "templates", "controller_neptune_webbrowser.vdf")
+    if not os.path.isfile(tpl):
+        return
+    base = os.path.join(steam_dir, "steamapps", "common", "Steam Controller Configs", user, "config", APP_NAME)
+    dest = os.path.join(base, "controller_neptune.vdf")
+    if os.path.exists(dest):
+        return
+    if dry_run:
+        say("会安装手柄布局：Web Browser（触摸板当鼠标）")
+        return
+    try:
+        os.makedirs(base, exist_ok=True)
+        shutil.copyfile(tpl, dest)
+        say("已安装手柄布局：Web Browser（触摸板当鼠标）")
+    except OSError as e:
+        say("手柄布局没装上（不影响启动）：%s" % e)
+
+
 def new_entry(idx, appid, exe_quoted, startdir_quoted, icon, tags):
     return (str(idx).encode(), T_DICT, [
         (b"appid", T_INT, u32(appid)),
@@ -488,6 +509,8 @@ def main(argv):
         say("将删除 %d 个 cccodroid 快捷方式" % len(mine))
 
     if args.dry_run:
+        if args.action == "add":
+            install_controller_layout(steam_dir, user, True)
         say("（--dry-run：没有写入任何文件）")
         return 0
 
@@ -507,6 +530,8 @@ def main(argv):
     if bak:
         say("原文件已备份：%s" % bak)
     say("已写入：%s" % vdf)
+    if args.action == "add":
+        install_controller_layout(steam_dir, user, False)
 
     if running and args.restart_steam:
         say("正在起回 Steam…")

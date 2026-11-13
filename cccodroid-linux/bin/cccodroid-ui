@@ -107,8 +107,22 @@ else
   fi
 fi
 
+# 语言：游戏模式由 Steam 启动，环境里的 LANG 可能是 C / en_US，而桌面会话用的是
+# ~/.config/plasma-localerc 里的语言。读它，保证游戏模式和桌面模式同一种界面语言。
+REAL_HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+[ -n "$REAL_HOME" ] || REAL_HOME="$HOME"
+if [ -f "$REAL_HOME/.config/plasma-localerc" ]; then
+  L="$(sed -n 's/^LANG=//p' "$REAL_HOME/.config/plasma-localerc" | head -1)"
+  T="$(sed -n 's/^LANGUAGE=//p' "$REAL_HOME/.config/plasma-localerc" | head -1)"
+  if [ -n "$L" ]; then export LANG="$L"; unset LC_ALL; fi
+  [ -n "$T" ] && export LANGUAGE="$T"
+fi
+
 # "--" 之后是传给 main.qml 的应用参数，qml 不会再把它们当成要加载的文件。
-exec "$QML" "$MAIN_QML" -- \
+# qml6 不认 -name；用 exec -a 把 argv[0] 改成 cccodroid，Qt 才会把 WM_CLASS / app_id 设成
+# cccodroid，和 cccodroid.desktop 对上，任务栏才会用上游图标。
+export QT_WAYLAND_APP_ID="${QT_WAYLAND_APP_ID:-cccodroid}"
+exec -a cccodroid "$QML" "$MAIN_QML" -- \
   "--token-file=$TOKEN_FILE" \
   "--key-file=$KEY_FILE" \
   "--base-url=http://127.0.0.2:$PORT" \

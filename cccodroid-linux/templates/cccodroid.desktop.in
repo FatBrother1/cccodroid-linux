@@ -9,6 +9,7 @@ Comment=启动本机 cccodroid 网关并打开界面
 Comment[zh_CN]=启动本机 cccodroid 网关并打开界面
 Exec="@BIN_DIR@/cccodroid" open
 Icon=cccodroid
+StartupWMClass=cccodroid
 Terminal=false
 Categories=Development;Utility;
 Keywords=claude;code;ai;cccodroid;

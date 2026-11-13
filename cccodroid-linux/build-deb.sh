@@ -57,6 +57,7 @@ Name=cccodroid
 Comment=Claude Code 图形工作台（Steam Deck / Linux 移植）
 Exec=cccodroid open
 Icon=cccodroid
+StartupWMClass=cccodroid
 Terminal=false
 Categories=Development;Utility;
 StartupNotify=true
