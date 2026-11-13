@@ -6,6 +6,9 @@ SteamOS / Arch 系桌面上：一个 Qt6 原生窗口、一套 systemd 用户服
 
 **本项目是社区移植，不是 cccodroid 官方项目。** 上游版权归 Grey Oak 与 cccodroid 贡献者所有，详见「致谢」。
 
+**产品标识：`cccodroid Steam Deck 0.1.0`。** 这里的 `0.1.0` 是移植版自己的版本号，不是上游 cccodroid 的版本号；
+上游目前是 0.6.x。看到 `0.1.0` 时请认准 `Steam Deck` 这个标识。
+
 ![cccodroid-linux 界面](docs/ui.png)
 
 ## 在 Steam Deck 上，它到底能帮你干什么

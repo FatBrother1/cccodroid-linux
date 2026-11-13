@@ -22,6 +22,8 @@
 
 ### 修正
 
+- 产品标识统一为 **cccodroid Steam Deck 0.1.0**：更新页和 GitHub Release 标题都带 `Steam Deck`，
+  避免把移植版的 0.1.0 当成上游 cccodroid 的版本号。
 - 桌面只保留一个 cccodroid 快捷方式；应用图标改用上游 cccodroid 的图标（192×192 PNG）。
 - 设置 → 更新：同时检查「cccodroid 本体」和「Claude Code」；应用本体可从 GitHub Releases 下载更新。
 - 修正 Claude Code 当前版本高于 stable 渠道时被误显示为「有新版本」（点下去是降级）的问题；

@@ -28,11 +28,14 @@ const NPM_REG = "https://registry.npmjs.org";
 const NPM_KEYS = {"SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U":"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEY6Ya7W++7aUPzvMTrezH6Ycx3c+HOKYCcNGybJZSCJq/fd7Qa8uuAKtdIkUQtQiEKERhAmE5lMMJhP8OkDOa2g=="};
 const devUpd = {
   auto: true, channel: "stable", lastCheck: 0, checking: false, error: "",
-  app: { id: "cccodroid", name: "cccodroid", current: APP_VERSION, latest: "", state: "unknown", message: "", done: 0, total: 0 },
+  app: { id: "cccodroid", name: "cccodroid Steam Deck", current: APP_VERSION, latest: "", state: "unknown", message: "", done: 0, total: 0 },
   claude: { id: "claude", name: "Claude Code", current: "", latest: "", state: "unknown", message: "", done: 0, total: 0 },
 };
 try { Object.assign(devUpd, JSON.parse(fs.readFileSync(DEV_UPD_FILE, "utf8")), { checking: false, error: "" }); devUpd.claude.state = devUpd.claude.state === "installing" ? "unknown" : devUpd.claude.state; } catch {}
 // 应用版本以磁盘上的 VERSION 为准（持久化文件里可能是上一次检查留下的旧值）。
+// 显示名也固定回新名字：旧版写进 ccapp-update.json 的是 "cccodroid"，会被 Object.assign 带回来。
+devUpd.app.id = "cccodroid";
+devUpd.app.name = "cccodroid Steam Deck";
 devUpd.app.current = APP_VERSION;
 devUpd.app.state = devUpd.app.state === "installing" ? "unknown" : (APP_VERSION ? devUpd.app.state : "unknown");
 if (!APP_VERSION) devUpd.app.message = tz("开发布局：读不到应用版本，跳过应用更新检查");
