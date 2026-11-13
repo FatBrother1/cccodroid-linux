@@ -192,6 +192,9 @@ cd ~/Downloads/cccodroid-0.1.0
 
 ## 十一、常见问题
 
+> 装 Decky 插件、装软件、看报错这类 Steam Deck 上的问题，见另一份文档：
+> [Steam Deck 使用指南](STEAMDECK.zh-CN.md)。
+
 **1. 打开窗口是白屏 / 打不开**
 先跑 `cccodroid doctor` 看哪一项失败。SteamOS 自带 Qt，一般不会缺；普通 Arch 需要装 Qt6 WebEngine。
 

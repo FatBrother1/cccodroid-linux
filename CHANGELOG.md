@@ -20,6 +20,12 @@
 - 更新链路：本地文件/在线更新、签名验证、`rollback`、`prune`。
 - `cccodroid doctor` 体检、`cccodroid tools-doc` 工具清单。
 
+### 文档
+
+- `README` 增加「在 Steam Deck 上，它到底能帮你干什么」：agent 的工具清单、能做的事和使用边界。
+- 新增 [`docs/STEAMDECK.zh-CN.md`](docs/STEAMDECK.zh-CN.md)：Decky 插件安装、只读根分区、软件安装路线选择、
+  五个真实场景、提示词写法和常见报错对照表。
+
 ### 移除（Android 专属功能，Linux 用不到）
 
 工作岛（灵动岛）、Shizuku/特权授权与设备工具、内存管家、耗电统计、组件市场/工具包模块/自定义组件/对账、
