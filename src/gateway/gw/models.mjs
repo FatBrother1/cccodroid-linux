@@ -85,9 +85,18 @@ export function isLoginMode(p = PROVIDER) { return !!(p && p.login && !keyOf(p))
 // 窗口一开始不知道（官方清单要令牌才能拉），跑过一轮后从 result.modelUsage 学到，见 learnWindow。
 const LOGIN_MODELS = [
   ["opus", "Opus（最新）"], ["sonnet", "Sonnet（最新）"], ["haiku", "Haiku（最新）"], ["fable", "Fable（最新）"],
-  ["claude-opus-5-5", "Opus 5.5"], ["claude-fable-5-1", "Fable 5.1"],
-  ["claude-sonnet-5-5", "Sonnet 5.5"], ["claude-sonnet-5", "Sonnet 5"],
-  ["claude-haiku-5-5", "Haiku 5.5"], ["claude-haiku-4-5-20251001", "Haiku 4.5"],
+  // 当前主推
+  ["claude-fable-5-2", "Fable 5.2"], ["claude-opus-5-5", "Opus 5.5"],
+  ["claude-sonnet-5-5", "Sonnet 5.5"], ["claude-haiku-5-5", "Haiku 5.5"],
+  // 仍在架的上一代 / 旧代
+  ["claude-fable-5-1", "Fable 5.1"], ["claude-fable-5", "Fable 5"],
+  ["claude-opus-5", "Opus 5"], ["claude-opus-4-8", "Opus 4.8"], ["claude-opus-4-7", "Opus 4.7"],
+  ["claude-opus-4-6", "Opus 4.6"], ["claude-opus-4-5-20251101", "Opus 4.5"],
+  ["claude-sonnet-5", "Sonnet 5"], ["claude-sonnet-4-6", "Sonnet 4.6"],
+  ["claude-haiku-4-5-20251001", "Haiku 4.5"],
+  // limited availability：要有 Anthropic 验证项目，普通账户可能 403/404
+  ["claude-mythos-5-2", "Mythos 5.2（受限）"], ["claude-mythos-5-1", "Mythos 5.1（受限）"],
+  ["claude-mythos-5", "Mythos 5（受限）"],
 ].map(([id, name]) => ({ id, name, context_window: 0, max_output_tokens: 0, input_modalities: ["text", "image"] }));
 
 // claude --effort 认的全部档位（claude --help 原文：low, medium, high, xhigh, max）。
@@ -237,7 +246,9 @@ export function withConfigured(list, p) {
   return more.length ? [...out, ...more.map((e) => one(e.id, e.contextWindow || cw))] : out;
 }
 const okWindow = (n) => Number.isInteger(n) && n >= 1024 && n <= 16777216;
-export const MODEL_ID_RE = /^[\w.:/@+-]{1,128}$/;
+// 模型名由上游决定：除了英文，也有第三方调用用中文、方括号标价格（如「中转的中转:[特价C]claude-fable-5」）。
+// 只挡空白、逗号和控制 / 格式字符（换行、零宽、双向覆盖），其余交给上游；长度仍限 128。
+export const MODEL_ID_RE = /^[^\s,\p{Cc}\p{Cf}]{1,128}$/u;
 /** 接口卡里另加的型号：[{ id, contextWindow }]。配置能分享导入、也能手改，按形状过一遍，最多 64 个 */
 export function extraModelsOf(p) {
   const seen = new Set(), out = [];

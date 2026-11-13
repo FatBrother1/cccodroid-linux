@@ -2254,7 +2254,7 @@ window.I18N_DICT["es"] = {
   "更多模型（选填，每行一个；名字后面可空一格写窗口，如 gpt-6.1-sol 1m）": "Más modelos (opcional, uno por línea; tras un espacio puedes indicar la ventana, p. ej. gpt-6.1-sol 1m)",
   "更多模型第 {n} 行看不懂：写成「模型名」或「模型名 窗口」，窗口如 256k、1m": "No se entiende la línea {n} de Más modelos: escribe «modelo» o «modelo ventana», con una ventana como 256k o 1m",
   "更多模型最多 64 个": "Más modelos: 64 como máximo",
-  "模型名只能用字母、数字和 . _ - : / @ +，不超过 128 个字符：{id}": "El nombre del modelo solo admite letras, dígitos y . _ - : / @ +, hasta 128 caracteres: {id}",
+  "模型名不能有空格、逗号或控制字符，不超过 128 个字符：{id}": "El nombre del modelo no puede contener espacios, comas ni caracteres de control, y debe tener 128 caracteres como máximo: {id}",
   "{n} 个已删除，{m} 个已经不在了（别处删了或已在回收站）": "{n} eliminadas, {m} ya no existen (eliminadas en otro sitio o ya en la papelera)",
   "{n} 个已删除，{m} 个正在生成没删，{k} 个已经不在了": "{n} eliminadas, {m} aún generando y sin eliminar, {k} ya no existen",
   "已放回原来那个会话的草稿": "Devuelto al borrador de la sesión original",
@@ -2549,4 +2549,7 @@ window.I18N_DICT["es"] = {
   "上一轮已答完，接着的这一轮没有等到结果（已中断）": "El turno anterior terminó, pero el siguiente no recibió resultado (interrumpido)",
   "目录不存在：{dir}，已改用 {cwd}": "No existe el directorio: {dir}; se usa {cwd} en su lugar",
   "接口报错，不是正常回复：": "La API devolvió un error, no una respuesta normal:",
+  "压缩线最大 1M，已按 1M 存": "El límite de compactación es 1 M como máximo; se guardó como 1 M",
+  "示例模板（不是真实服务，换成服务商给你的）": "Plantilla de ejemplo (no es un servicio real; sustituye los valores por los de tu proveedor)",
+  "第三方端口由你自己选择，应用不审核、不背书。对方能看到你的 Key、代码和对话，请只用你信任的服务；不要使用共享或转售的账户。": "Los endpoints de terceros los eliges tú; la app no los audita ni los respalda. El operador puede ver tu clave, tu código y tus conversaciones, así que usa solo servicios de confianza y no uses cuentas compartidas ni revendidas.",
 };

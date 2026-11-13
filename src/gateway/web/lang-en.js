@@ -2294,7 +2294,7 @@ window.I18N_DICT.en = {
   "更多模型（选填，每行一个；名字后面可空一格写窗口，如 gpt-6.1-sol 1m）": "More models (optional, one per line; add a window after a space, e.g. gpt-6.1-sol 1m)",
   "更多模型第 {n} 行看不懂：写成「模型名」或「模型名 窗口」，窗口如 256k、1m": "Can't read line {n} of More models: write \"model\" or \"model window\", with a window like 256k or 1m",
   "更多模型最多 64 个": "More models: at most 64",
-  "模型名只能用字母、数字和 . _ - : / @ +，不超过 128 个字符：{id}": "Model names may use only letters, digits and . _ - : / @ +, up to 128 characters: {id}",
+  "模型名不能有空格、逗号或控制字符，不超过 128 个字符：{id}": "Model names can't contain spaces, commas or control characters, and must be at most 128 characters: {id}",
   "{n} 个已删除，{m} 个已经不在了（别处删了或已在回收站）": "{n} deleted, {m} no longer exist (deleted elsewhere or already in the trash)",
   "{n} 个已删除，{m} 个正在生成没删，{k} 个已经不在了": "{n} deleted, {m} still generating and not deleted, {k} no longer exist",
   "已放回原来那个会话的草稿": "Put back into the original session's draft",
@@ -2591,5 +2591,8 @@ window.I18N_DICT.en = {
   "上游没发结束标记就断开了，回答已按说完处理；这条是否完整无法确认，如果没说完，发一句「继续」": "The upstream disconnected without an end marker, so the reply was treated as finished. Whether it is complete can't be confirmed; if it was cut off, send “continue”",
   "上一轮已答完，接着的这一轮没有等到结果（已中断）": "The previous turn finished, but the turn after it got no result (interrupted)",
   "目录不存在：{dir}，已改用 {cwd}": "Directory not found: {dir}; using {cwd} instead",
-  "接口报错，不是正常回复：": "The API returned an error, not a normal reply:"
+  "接口报错，不是正常回复：": "The API returned an error, not a normal reply:",
+  "压缩线最大 1M，已按 1M 存": "Compact line max is 1M; saved as 1M",
+  "示例模板（不是真实服务，换成服务商给你的）": "Example template (not a real service; replace it with what your provider gives you)",
+  "第三方端口由你自己选择，应用不审核、不背书。对方能看到你的 Key、代码和对话，请只用你信任的服务；不要使用共享或转售的账户。": "Third-party endpoints are your choice; the app does not vet or endorse them. The operator can see your key, code and conversations, so use only services you trust, and do not use shared or resold accounts."
 };

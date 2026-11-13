@@ -2254,7 +2254,7 @@ window.I18N_DICT["fr"] = {
   "更多模型（选填，每行一个；名字后面可空一格写窗口，如 gpt-6.1-sol 1m）": "Autres modèles (facultatif, un par ligne ; fenêtre possible après une espace, ex. gpt-6.1-sol 1m)",
   "更多模型第 {n} 行看不懂：写成「模型名」或「模型名 窗口」，窗口如 256k、1m": "Ligne {n} des autres modèles illisible : écrivez « modèle » ou « modèle fenêtre », fenêtre comme 256k ou 1m",
   "更多模型最多 64 个": "Autres modèles : 64 au maximum",
-  "模型名只能用字母、数字和 . _ - : / @ +，不超过 128 个字符：{id}": "Le nom du modèle n'accepte que lettres, chiffres et . _ - : / @ +, 128 caractères au plus : {id}",
+  "模型名不能有空格、逗号或控制字符，不超过 128 个字符：{id}": "Le nom du modèle ne peut pas contenir d'espaces, de virgules ni de caractères de contrôle, et doit faire 128 caractères au plus : {id}",
   "{n} 个已删除，{m} 个已经不在了（别处删了或已在回收站）": "{n} supprimées, {m} n'existent plus (supprimées ailleurs ou déjà dans la corbeille)",
   "{n} 个已删除，{m} 个正在生成没删，{k} 个已经不在了": "{n} supprimées, {m} encore en génération et non supprimées, {k} n'existent plus",
   "已放回原来那个会话的草稿": "Remis dans le brouillon de la session d'origine",
@@ -2549,4 +2549,7 @@ window.I18N_DICT["fr"] = {
   "上一轮已答完，接着的这一轮没有等到结果（已中断）": "Le tour précédent est terminé, mais le tour suivant n'a reçu aucun résultat (interrompu)",
   "目录不存在：{dir}，已改用 {cwd}": "Dossier introuvable : {dir} ; {cwd} est utilisé à la place",
   "接口报错，不是正常回复：": "L'API a renvoyé une erreur, pas une réponse normale :",
+  "压缩线最大 1M，已按 1M 存": "La limite de compactage est de 1 M maximum ; enregistrée à 1 M",
+  "示例模板（不是真实服务，换成服务商给你的）": "Modèle d’exemple (ce n’est pas un vrai service ; remplacez-le par les valeurs de votre fournisseur)",
+  "第三方端口由你自己选择，应用不审核、不背书。对方能看到你的 Key、代码和对话，请只用你信任的服务；不要使用共享或转售的账户。": "Les points de terminaison tiers sont votre choix ; l’application ne les audite pas et ne les recommande pas. L’opérateur peut voir votre clé, votre code et vos conversations : n’utilisez que des services de confiance, et pas de comptes partagés ou revendus.",
 };

@@ -92,6 +92,8 @@
     modelEl.innerHTML = (other ? `<span class="chip chip-prov">${esc(provLabel(pv))}</span>` : "") +
       `<span class="chip">${esc(pretty)}</span>${eff ? `<span class="chip">${esc(eff)}</span>` : ""}`;
     modelEl.title = (other ? provLabel(pv) + " · " : "") + name;
+    // #model-chip 是 display:contents，本身没有盒子，title 落不到实际上屏的 chip 上
+    modelEl.querySelectorAll(".chip").forEach((c) => { c.title = modelEl.title; });
   }
   modelEl.setAttribute("role", "button");
   modelEl.tabIndex = 0;
@@ -333,6 +335,11 @@
       // 用量条：总刻度用厂商给的真实窗口，但设了压缩窗口就改以它为满刻度。
       // 网关回 0 就是不知道：别拿下拉框落在的那一项兜底，那可能是别的型号（#82）
       loadCtxModel(r);
+      // 压缩线输入框是全局设置，和当前型号在不在清单里无关：型号清单为空、或当前型号是
+      // 别名不在清单里（第三方接口常见）时也要回填，否则「Claude 行为」页一直显示旧值，
+      // 用户再存一次旧值就把刚改的新值盖掉
+      const ac = $("set-autocompact");
+      if (ac && (acForce || document.activeElement !== ac)) ac.value = r.autoCompactWindow || "";
       const cur = MODELS.find((m) => m.id === curId);
       if (cur) {
         const k = (v) => (v ? Math.round(v / 1024) + "k" : "—");
@@ -340,8 +347,6 @@
         $("model-info").textContent =
                     t("上下文 {n} · 输出上限 {out} · 输入 {mods}", { n: k(cur.context_window), out: k(cur.max_output_tokens), mods: (cur.input_modalities || []).join(" / ") }) +
           t("｜这是默认值；单个会话在输入栏下面的模型标签里另选");
-        const ac = $("set-autocompact");
-        if (ac && (acForce || document.activeElement !== ac)) ac.value = r.autoCompactWindow || "";
       } else if (r.nativeModels) {
         $("model-info").innerHTML =
                     t("没指定模型 → <b>由 claude 自己决定</b>（官方账户当前默认 <code>{model}</code>）。", { model: esc(r.defaultModel || t("claude 内置默认")) }) +
@@ -458,7 +463,7 @@
     const dirs = state.settings.addDirs || [];
     $("dir-toggle").textContent = t("{n} 个", { n: dirs.length });
     $("dir-list").innerHTML = dirs.length
-      ? dirs.map((d, i) => `<div class="item"><div class="it-title">${esc(d)}</div>
+      ? dirs.map((d, i) => `<div class="item"><div class="it-title wrap" title="${esc(d)}">${esc(d)}</div>
           <div class="it-acts"><button data-i="${i}">${t("移除")}</button></div></div>`).join("")
       : '<div class="tiny">' + t("（没有附加目录）") + '</div>';
     $("dir-list").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
@@ -507,6 +512,12 @@
       if (v[k] && $(v[k][0])) $(v[k][0]).value = v[k][1];
       if (c[k] && $(c[k][0])) $(c[k][0]).checked = c[k][1];
     }
+    // 压缩线两个入口（设置页输入框 / 窗口未知时的数字框）都回到真正存着的值，滑块跟着重画
+    if (patch && "autoCompactWindow" in patch) {
+      const n = S.autoCompactWindow ? String(S.autoCompactWindow) : "";
+      for (const id of ["set-autocompact", "ac-num"]) { const el = $(id); if (el) el.value = n; }
+      acPaint(acWin, S.autoCompactWindow || 0, acDef);
+    }
     if ("model" in patch || "effort" in patch) loadModels();
   }
 
@@ -539,6 +550,7 @@
   // 100k 是 claude 认的下限（gw/models.mjs 的 defaultCompactLine 注释：只认 100k–1M），
   // 以前允许 20k，上下文条按 20k 显示满格、claude 实际按 100k 压（0.6.10 审计 195-O.2）
   const AC_MIN = 100000;
+  const AC_MAX = 1000000;
   let acWin = 0, acSet = 0, acDef = 0, acForce = false;   // acDef：没设时网关给第三方型号的默认线（0 = 交给 claude）   // acForce：刚存过，焦点还在控件上也按存下的值回填（没存上就弹回去）
   function acStep() { return Math.max(1000, Math.ceil((acWin - AC_MIN) / 100 / 1000) * 1000); }
   function acTok(p) { return Math.min(acWin, Math.round((AC_MIN + (acWin - AC_MIN) * p / 100) / acStep()) * acStep()); }
@@ -556,23 +568,46 @@
     const box = $("ac-slide");
     acWin = Number(win) || 0; acSet = Number(set) || 0; acDef = Number(def) || 0;
     const unknown = acWin <= AC_MIN;
-    // 窗口未知（厂商清单没报）但已经设了压缩线：滑块没法按窗口换算，至少把设过的值显示出来，
-    // 别整块藏掉让人以为没设（195-E.10）
-    box.classList.toggle("hidden", unknown && !acSet);
+    // 窗口未知（厂商清单没报）：滑块没法按窗口换算，但用户仍得能改压缩线（195-E.10）。
+    // 换成数字框，设过的值照原样显示、可改；claude 对未知窗口按 200k 上限压（gw/models.mjs 的 compactLineOf）。
+    box.classList.remove("hidden");
     if (unknown) {
-      if (acSet) {
-        $("ac-val").textContent = t("已设 {line}（模型窗口未知，按你设的生效）", { line: fmtTok(acSet) });
-        $("ac-range").classList.add("hidden");
-        $("ac-auto").classList.remove("hidden");
-      }
+      $("ac-range").parentNode.classList.add("hidden");
+      box.querySelector(".ac-scale").classList.add("hidden");
+      $("ac-manual").classList.remove("hidden");
+      const num = $("ac-num");
+      if (acForce || document.activeElement !== num) num.value = acSet ? String(acSet) : "";
+      acForce = false;
+      $("ac-val").textContent = acSet
+        ? t("已设 {line}（模型窗口未知，按你设的生效）", { line: fmtTok(acSet) })
+        : t("未填（按 200k 算）");
+      $("ac-auto").classList.toggle("hidden", !acSet);
       return;
     }
-    $("ac-range").classList.remove("hidden");
+    $("ac-range").parentNode.classList.remove("hidden");
+    box.querySelector(".ac-scale").classList.remove("hidden");
+    $("ac-manual").classList.add("hidden");
     const rg = $("ac-range");
     if (acForce || document.activeElement !== rg) rg.value = acSet ? acPos(acSet) : acDef ? acPos(acDef) : 100;
     acForce = false;
     $("ac-min").textContent = fmtTok(AC_MIN); $("ac-max").textContent = fmtTok(acWin);
     acShow(acSet);
+  }
+  /** 滑块和两个数字框共用同一套保存规则：空 / 0 / 乱填 = 交给 claude；claude 只认 100k–1M */
+  function acSaveFrom(el) {
+    const raw = el.value.trim();
+    let n = raw ? Math.round(Number(raw)) : null;
+    if (n == null || !Number.isFinite(n) || n <= 0) n = null;   // 空 / 0 / 乱填 = 交给 claude
+    else if (n < AC_MIN) {
+      // 更小的它按 100k 处理：界面别让人设成 20k，免得上下文条按 20k 显示满格（195-O.2）
+      n = AC_MIN;
+      toast(t("压缩线最小 100k，已按 100k 存"));
+    } else if (n > AC_MAX) {
+      n = AC_MAX;
+      toast(t("压缩线最大 1M，已按 1M 存"));
+    }
+    el.value = n == null ? "" : String(n);
+    saveSettings({ autoCompactWindow: n }).then(() => { acForce = true; return loadModels(); });
   }
   $("ac-range").addEventListener("input", (e) => acShow(acTok(+e.target.value)));
   $("ac-range").addEventListener("change", (e) => {
@@ -580,18 +615,8 @@
     saveSettings({ autoCompactWindow: v }).then(() => { acForce = true; return loadModels(); });
   });
   $("ac-auto").addEventListener("click", () => saveSettings({ autoCompactWindow: null }).then(() => { acForce = true; return loadModels(); }));
-  $("set-autocompact").addEventListener("change", (e) => {
-    const raw = e.target.value.trim();
-    let n = raw ? Math.round(Number(raw)) : null;
-    if (n == null || !Number.isFinite(n) || n <= 0) n = null;   // 空 / 0 / 乱填 = 交给 claude
-    else if (n < AC_MIN) {
-      // claude 只认 100k 起的压缩线，更小的它按 100k 处理：界面别让人设成 20k，免得上下文条按 20k 显示满格（195-O.2）
-      n = AC_MIN;
-      toast(t("压缩线最小 100k，已按 100k 存"));
-    }
-    e.target.value = n == null ? "" : String(n);
-    saveSettings({ autoCompactWindow: n }).then(() => { acForce = true; return loadModels(); });
-  });
+  $("set-autocompact").addEventListener("change", (e) => acSaveFrom(e.target));
+  $("ac-num").addEventListener("change", (e) => acSaveFrom(e.target));
   $("btn-add-dir").addEventListener("click", async () => {
     const v = $("inp-dir").value.trim();
     if (!v) return;

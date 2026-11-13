@@ -2254,7 +2254,7 @@ window.I18N_DICT["id"] = {
   "更多模型（选填，每行一个；名字后面可空一格写窗口，如 gpt-6.1-sol 1m）": "Model lain (opsional, satu per baris; tambahkan jendela setelah spasi, mis. gpt-6.1-sol 1m)",
   "更多模型第 {n} 行看不懂：写成「模型名」或「模型名 窗口」，窗口如 256k、1m": "Baris {n} pada Model lain tidak terbaca: tulis «model» atau «model jendela», jendela seperti 256k atau 1m",
   "更多模型最多 64 个": "Model lain: paling banyak 64",
-  "模型名只能用字母、数字和 . _ - : / @ +，不超过 128 个字符：{id}": "Nama model hanya boleh huruf, angka, dan . _ - : / @ +, maksimal 128 karakter: {id}",
+  "模型名不能有空格、逗号或控制字符，不超过 128 个字符：{id}": "Nama model tidak boleh berisi spasi, koma, atau karakter kontrol, dan maksimal 128 karakter: {id}",
   "{n} 个已删除，{m} 个已经不在了（别处删了或已在回收站）": "{n} dihapus, {m} sudah tidak ada (dihapus di tempat lain atau sudah di tempat sampah)",
   "{n} 个已删除，{m} 个正在生成没删，{k} 个已经不在了": "{n} dihapus, {m} masih membuat respons dan tidak dihapus, {k} sudah tidak ada",
   "已放回原来那个会话的草稿": "Dikembalikan ke draf sesi asal",
@@ -2549,4 +2549,7 @@ window.I18N_DICT["id"] = {
   "上一轮已答完，接着的这一轮没有等到结果（已中断）": "Giliran sebelumnya selesai, tetapi giliran berikutnya tidak mendapat hasil (terputus)",
   "目录不存在：{dir}，已改用 {cwd}": "Direktori tidak ada: {dir}; memakai {cwd} sebagai gantinya",
   "接口报错，不是正常回复：": "API mengembalikan error, bukan balasan normal:",
+  "压缩线最大 1M，已按 1M 存": "Batas maksimum garis pemadatan adalah 1M; disimpan sebagai 1M",
+  "示例模板（不是真实服务，换成服务商给你的）": "Contoh templat (bukan layanan nyata; ganti dengan nilai dari penyedia Anda)",
+  "第三方端口由你自己选择，应用不审核、不背书。对方能看到你的 Key、代码和对话，请只用你信任的服务；不要使用共享或转售的账户。": "Endpoint pihak ketiga Anda pilih sendiri; aplikasi tidak mengaudit atau mendukungnya. Operator dapat melihat Key, kode, dan percakapan Anda, jadi gunakan hanya layanan yang Anda percaya, dan jangan gunakan akun bersama atau hasil jual ulang.",
 };
