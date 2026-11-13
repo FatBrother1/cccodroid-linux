@@ -119,8 +119,10 @@ if [ -f "$REAL_HOME/.config/plasma-localerc" ]; then
 fi
 
 # "--" 之后是传给 main.qml 的应用参数，qml 不会再把它们当成要加载的文件。
-# qml6 不认 -name；用 exec -a 把 argv[0] 改成 cccodroid，Qt 才会把 WM_CLASS / app_id 设成
-# cccodroid，和 cccodroid.desktop 对上，任务栏才会用上游图标。
+# 任务栏图标：Wayland 下 qml6 把 app_id 固定成 org.qt-project.qml，KDE 按 app_id 找桌面文件，
+# 对不上 cccodroid.desktop；改走 XWayland 后 WM_CLASS 能对上桌面条目的 StartupWMClass，图标才正确。
+# （游戏模式原本就用 xcb；桌面模式也一起用，实测任务栏显示上游图标。）
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
 export QT_WAYLAND_APP_ID="${QT_WAYLAND_APP_ID:-cccodroid}"
 exec -a cccodroid "$QML" "$MAIN_QML" -- \
   "--token-file=$TOKEN_FILE" \
