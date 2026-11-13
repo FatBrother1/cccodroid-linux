@@ -12,6 +12,8 @@
   三类（读屏、剪贴板、分享到别的应用）；Claude 版本选单不再显示「Android 真机验证」标记和 targetSdk。
 - **窗口标题栏图标改为上游图标**：qml6 的 Window 没有 `icon` 属性，Qt 默认挂的是 Qml Runtime 的绿色图标；
   启动时由 `bin/cccodroid-seticon` 在窗口出现后写入 `_NET_WM_ICON`。
+- **禁止触摸屏双指缩放**：`touch-action: pan-x pan-y` 加多指 `touchmove` 拦截，页面固定按 100% 显示，
+  单指滚动和 `Ctrl` 加减缩放不受影响。
 - 0.1.1 的全部修复（图标、更新检查、Linux 组件、游戏模式、上游 v0.6.20 同步）仍然包含。
 
 ## v0.1.1（2026-11-13）

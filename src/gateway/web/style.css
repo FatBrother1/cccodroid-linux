@@ -3423,3 +3423,7 @@ html[dir="rtl"] #ctxbar:is(.warn,.danger) #ctxtxt{background:linear-gradient(270
 /* RTL：命令参数 / 路径按 LTR 排；标题用 start */
 .ts-head,.bubble .hook-ctx{text-align:start}
 html[dir="rtl"] :is(.tool-arg,.perm-path,.missing-img){direction:ltr;text-align:left;unicode-bidi:isolate}
+
+/* 触摸屏：双指缩放会把整页放大（Steam Deck 上顶栏和侧栏会被挤出视口，刷新也回不来）。
+   pan-x pan-y 只保留滚动，不让浏览器处理 pinch；theme.js 里再拦一层多指 touchmove。 */
+html, body{touch-action:pan-x pan-y}

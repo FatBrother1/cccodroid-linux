@@ -8,6 +8,12 @@
 
 // ─────────────────────────────────────────────────────────────────────
 
+// 触摸屏：阻止双指缩放。touch-action 在 style.css 里已经关掉 pinch，这里再兜一层，
+// 只拦多指 touchmove，单指滚动 / 长按不受影响。
+document.addEventListener("touchmove", function (e) {
+  if (e.touches && e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+
 // ── 原生桥口令（cccodroid 0.4.6 起）：壳的 CCApp 里有副作用的方法第一个参数要带口令，
 //    口令只经首页地址的 #k= 交给主框架（不进请求行，11-03 审查 M-3）（存 sessionStorage，刷新还在）。HTML 预览的 iframe 同样被注入了 CCApp，
 //    但和界面不同源，拿不到口令，调了也没用。这里把 CCApp 换成自动带口令的一层，其余代码照旧写 CCApp.xxx(…)。
