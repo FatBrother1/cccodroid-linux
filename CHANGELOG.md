@@ -29,6 +29,9 @@
 - 修正 Claude Code 当前版本高于 stable 渠道时被误显示为「有新版本」（点下去是降级）的问题；
   「检查更新」现在会立即给出反馈。
 - 新增 `scripts/sync-upstream.sh` 与 `docs/UPSTREAM.md`：记录上游基线 v0.6.17，可对照 v0.6.20 的网关改动。
+- 扩展页恢复「可选组件 / 自定义组件」两块，并按 Linux 适配：组件清单改为 Linux 可用的
+  Chromium、FFmpeg、yt-dlp、restic、apktool 等（能用户级安装的直接装，需要 root 的给命令）；
+  自定义组件支持导入 x86_64 程序 / AppImage / 脚本，生成同名命令和 Claude 技能。
 
 ### 文档
 

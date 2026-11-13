@@ -8,7 +8,80 @@
       ${acts ? `<div class="it-acts">${acts}</div>` : ""}</div>`;
 
 
-  function loadExt() { loadGhField(); loadExtPlugins(); loadExtCmds(); loadExtSkills(); loadExtMcp(); loadExtMarkets(); loadExtHooks(); }
+  function loadExt() { loadGhField(); loadExtPlugins(); loadExtCmds(); loadExtSkills(); loadExtMcp(); loadExtMarkets(); loadExtHooks(); loadComp(); loadCustom(); }
+
+  // ── Linux 版可选组件：检测 / 用户级安装 / 给命令 ─────────────────────
+  let lastComp = [];
+  async function loadComp() {
+    const box = $("comp-list"); if (!box) return;
+    let r;
+    try { r = await api("/api/components"); }
+    catch (e) { box.innerHTML = `<div class="tiny err">${esc(e.message)}</div>`; return; }
+    if (!r || !r.ok) { box.innerHTML = `<div class="tiny err">${esc((r && r.message) || t("取不到组件列表"))}</div>`; return; }
+    lastComp = r.items || [];
+    $("comp-count").textContent = `${lastComp.filter((x) => x.installed).length}/${lastComp.length}`;
+    box.innerHTML = lastComp.map((it) => {
+      const meta = `<span>${esc(it.category || "other")}</span><span>${esc(it.size || "")}</span>` +
+        (it.installed ? `<span class="ok">${t("已安装")}${it.version ? " · " + esc(it.version) : ""}</span>` : `<span>${t("未安装")}</span>`);
+      const acts = it.installed
+        ? (it.managed ? `<button data-comp="remove" data-id="${esc(it.id)}">${t("移除")}</button>` : "")
+        : it.method === "guide" ? `<button data-comp="guide" data-id="${esc(it.id)}">${t("复制安装命令")}</button>`
+          : `<button data-comp="install" data-id="${esc(it.id)}">${t("安装")}</button>`;
+      const guide = !it.installed && it.method === "guide" && it.guide ? `<div class="tiny">${esc(it.guide)}</div>` : "";
+      return extItem(esc(it.name), meta, acts, `<div class="tiny">${esc(it.desc || "")}</div>${guide}`, [it.category || "other"]);
+    }).join("") || `<div class="tiny">${t("没有组件")}</div>`;
+    renderIdx("comp", CAT());
+  }
+  $("comp-check").addEventListener("click", () => { $("comp-list").innerHTML = `<div class="tiny">${t("检测中…")}</div>`; loadComp(); });
+  $("comp-list").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-comp]"); if (!b) return;
+    const it = lastComp.find((x) => x.id === b.dataset.id); if (!it) return;
+    if (b.dataset.comp === "guide") {
+      try { await navigator.clipboard.writeText(it.guide || ""); toast(t("安装命令已复制")); }
+      catch { toast(it.guide || t("没有安装说明"), true); }
+      return;
+    }
+    if (b.dataset.comp === "remove") {
+      if (!confirm(t("移除组件「{n}」？只会删应用目录里的文件。", { n: it.name }))) return;
+      const r = await post("/api/components/remove", { id: it.id }).catch((e2) => ({ ok: false, message: e2.message }));
+      toast(r.message || (r.ok ? t("已移除") : t("移除失败")), !r.ok); loadComp(); return;
+    }
+    b.disabled = true;
+    const r = await post("/api/components/install", { id: it.id }).catch((e2) => ({ ok: false, message: e2.message }));
+    toast(r.message || (r.ok ? t("已安装") : t("安装失败")), !r.ok);
+    loadComp();
+  });
+
+  // ── 自定义组件：导入 x86_64 程序 → 命令 + 技能 ─────────────────────
+  let lastCustom = [];
+  async function loadCustom() {
+    const box = $("custom-list"); if (!box) return;
+    let r;
+    try { r = await api("/api/custom"); }
+    catch (e) { box.innerHTML = `<div class="tiny err">${esc(e.message)}</div>`; return; }
+    lastCustom = (r && r.items) || [];
+    $("custom-count").textContent = lastCustom.length;
+    box.innerHTML = lastCustom.length ? lastCustom.map((it) => extItem(
+      esc(it.name || it.cmd),
+      `<span>${esc(it.cmd)}</span><span>${esc(it.source || "")}</span>`,
+      `<button data-custom="remove" data-id="${esc(it.id)}">${t("移除")}</button>`, "", ["on"])).join("")
+      : `<div class="tiny">${t("还没有自定义组件。导入后会生成同名命令和 Claude 技能。")}</div>`;
+  }
+  $("custom-add").addEventListener("click", async () => {
+    const path = $("custom-path").value.trim(), cmd = $("custom-cmd").value.trim(), name = $("custom-name").value.trim();
+    if (!path || !cmd) return toast(t("路径和命令名都要填"), true);
+    const r = await post("/api/custom/import", { path, cmd, name }).catch((e) => ({ ok: false, message: e.message }));
+    toast(r.message || (r.ok ? t("已导入") : t("导入失败")), !r.ok);
+    if (r.ok) { $("custom-path").value = ""; $("custom-cmd").value = ""; $("custom-name").value = ""; }
+    loadCustom();
+  });
+  $("custom-list").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-custom]"); if (!b) return;
+    const it = lastCustom.find((x) => x.id === b.dataset.id); if (!it) return;
+    if (!confirm(t("移除自定义组件「{n}」？会删掉它的程序、命令和技能。", { n: it.name || it.cmd }))) return;
+    const r = await post("/api/custom/remove", { id: it.id }).catch((e2) => ({ ok: false, message: e2.message }));
+    toast(r.message || (r.ok ? t("已移除") : t("移除失败")), !r.ok); loadCustom();
+  });
 
   // ── 分类索引条：扩展页每节一条，横向滚动。点一下只看那一类，点「全部」复原；刷新列表后选中的分类保留 ──
   // 条目带 data-tags（空格分隔的分类键）。labels 定顺序和显示名；没列出的键（如插件市场名 m:<名字>）按名字附在后面

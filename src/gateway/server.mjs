@@ -62,6 +62,7 @@ import { ensureSessionRetention, migrateHookPause, routeExtensions } from "./gw/
 import { PROJECTS, routeProjects } from "./gw/projects.mjs";
 import { routeBookmarks } from "./gw/bookmarks.mjs";
 import { routeFonts } from "./gw/fonts.mjs";
+import { routeLinuxComponents } from "./gw/linux-components.mjs";
 import { commandRoutes } from "./gw/commands.mjs";
 import { routeUi } from "./gw/uistore.mjs";
 import { routeSched } from "./gw/sched.mjs";
@@ -80,7 +81,7 @@ import { COOKIE, SESSION, UI_HOST, cookieHostOk, denyLog, denyReason, localAddr,
 import { startNotify } from "./gw/notify.mjs";
 
 // 各模块的路由函数，按原来分支的先后排；返回 NEXT 表示不归它管
-const ROUTES = [routeClaude, routeUsage, routeCaps, routeProviders, routeSettings, routeProjects, routeBookmarks, routeFonts, commandRoutes(builtinCommands), routeUi, routeSched, routeSessModel, routeBackfill, routeMerge, routeProfile, routeLineage, routeArchive, routeSessions, routeExtensions, routeModels, routeTerminal, routeGh, routeStorage, routeGit, routeArc, routeFiles, routePreview, routeBus, routeQueue, routeDevside, routeLogin, routeRun];
+const ROUTES = [routeClaude, routeUsage, routeCaps, routeProviders, routeSettings, routeProjects, routeBookmarks, routeFonts, routeLinuxComponents, commandRoutes(builtinCommands), routeUi, routeSched, routeSessModel, routeBackfill, routeMerge, routeProfile, routeLineage, routeArchive, routeSessions, routeExtensions, routeModels, routeTerminal, routeGh, routeStorage, routeGit, routeArc, routeFiles, routePreview, routeBus, routeQueue, routeDevside, routeLogin, routeRun];
 
 // ── 路由 ──────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {

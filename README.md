@@ -44,6 +44,8 @@ cccodroid 里跑的是 Claude Code，一个带工具的 agent，不是只会聊�
   作为自定义接口使用（组件来自 [cccodroid-openai-bridge](https://github.com/chenshi723/cccodroid-openai-bridge)，可选，需自备上游 API Key）。
 - **页面操控 MCP（ccui）**：Claude 可以读取原生窗口里的页面、点按、输入、滚动、截图，用来操作 cccodroid 自己的界面
   和应用内浏览器窗格。
+- **扩展页的组件 / 自定义组件（Linux 版）**：检测并安装 Linux 可用的组件（无头 Chromium、FFmpeg、yt-dlp 等），
+  也可以导入 x86_64 程序 / AppImage / 脚本，自动生成命令和 Claude 技能。上游的 Termux/arm64 组件包不会硬塞给 Deck。
 - **更新链路**：本地文件 / 在线更新、发布签名校验、`rollback` 回退、旧版本清理；
   设置 → 更新里可以检查 cccodroid 本体（GitHub Releases）和 Claude Code，Claude Code 支持自动更新。
 
