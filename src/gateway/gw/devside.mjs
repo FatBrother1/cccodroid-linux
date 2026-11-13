@@ -37,7 +37,7 @@ try { Object.assign(devUpd, JSON.parse(fs.readFileSync(DEV_UPD_FILE, "utf8")), {
 devUpd.app.id = "cccodroid";
 devUpd.app.name = "cccodroid Steam Deck";
 devUpd.app.current = APP_VERSION;
-devUpd.app.state = devUpd.app.state === "installing" ? "unknown" : (APP_VERSION ? devUpd.app.state : "unknown");
+devUpd.app.state = devUpd.app.state === "installing" || devUpd.app.state === "downloading" ? "error" : (APP_VERSION ? devUpd.app.state : "unknown");
 if (!APP_VERSION) devUpd.app.message = tz("开发布局：读不到应用版本，跳过应用更新检查");
 const devUpdSave = () => { try { fs.writeFileSync(DEV_UPD_FILE, JSON.stringify(devUpd)); } catch {} };
 const cmpVer = (a, b) => {
@@ -91,6 +91,27 @@ async function appLatest(force = false) {
   const pick = (s) => assets.find((a) => String(a.name || "").endsWith(s)) || null;
   appCache = { at: Date.now(), data: { version, tag, tar: pick(".tar.gz"), sha: pick(".tar.gz.sha256"), sig: pick(".tar.gz.sig"), html: rel.html_url || "" } };
   return appCache.data;
+}
+
+// GitHub Releases 的资产直链在部分网络（尤其国内）连不上，但 API 能通。按顺序试直链和
+// 三个常用 GitHub 加速前缀；只给「拿到响应头」设超时，开始收 body 后不再掐断大文件。
+const GH_PROXIES = ["https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/"];
+async function fetchAsset(url, timeoutMs = 15000) {
+  let last = null;
+  for (const u of [url, ...GH_PROXIES.map((p) => p + url)]) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(u, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (r.ok || r.status === 206) return r;
+      last = new Error("HTTP " + r.status);
+    } catch (e) {
+      clearTimeout(timer);
+      last = e;
+    }
+  }
+  throw last || new Error("fetch failed");
 }
 
 async function appCheck(force = false) {
@@ -295,14 +316,14 @@ async function devUpdInstallApp() {
     const name = path.basename(String(j.tar.name || "cccodroid.tar.gz"));
     const file = path.join(dir, name), part = file + ".part";
     fs.rmSync(part, { force: true });
-    const r = await fetch(j.tar.browser_download_url, { signal: AbortSignal.timeout(600000) });
+    const r = await fetchAsset(j.tar.browser_download_url, 15000);
     if (!r.ok) throw new Error("HTTP " + r.status);
     a.total = Number(r.headers.get("content-length") || 0);
     const out = fs.openSync(part, "w");
     try { for await (const chunk of r.body) { fs.writeSync(out, chunk); a.done += chunk.length; } }
     finally { fs.closeSync(out); }
     a.message = tz("校验 sha256…"); devUpdSave();
-    const sr = await fetch(j.sha.browser_download_url, { signal: AbortSignal.timeout(20000) });
+    const sr = await fetchAsset(j.sha.browser_download_url, 20000);
     if (!sr.ok) throw new Error("校验文件 HTTP " + sr.status);
     const want = (await sr.text()).trim().split(/\s+/)[0];
     if (!/^[a-f0-9]{64}$/i.test(want)) throw new Error(tz("校验文件内容不对"));
@@ -311,7 +332,7 @@ async function devUpdInstallApp() {
     if (h.digest("hex") !== want.toLowerCase()) throw new Error(tz("sha256 不符，已放弃安装"));
     fs.renameSync(part, file);
     if (j.sig) {
-      const gr = await fetch(j.sig.browser_download_url, { signal: AbortSignal.timeout(20000) });
+      const gr = await fetchAsset(j.sig.browser_download_url, 20000);
       if (!gr.ok) throw new Error("签名文件 HTTP " + gr.status);
       fs.writeFileSync(file + ".sig", await gr.text());
     }

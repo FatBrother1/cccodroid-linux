@@ -18,6 +18,9 @@
   自定义组件支持导入 x86_64 程序 / AppImage / 脚本，生成同名命令和 Claude 技能。
 - 修正 Flatpak 组件安装报 `No remote refs found for 'flathub'`：网关把 HOME/XDG 收进了应用目录，
   看不到用户自己的 flathub；现在 Flatpak 安装改用真实用户环境，装完生成 `chromium` 等包装命令。
+- 应用本体更新下载 GitHub Release 资产时，直链失败会自动回退到 `ghfast.top` / `gh-proxy.com` /
+  `ghproxy.net` 加速镜像；更新时优先继承已安装的 Claude Code，不再重复下载。
+- **发行包确认不含 Claude Code 本体**；0.1.0 的旧二进制资产已撤回（旧构建误含 Claude Code），请使用 0.1.1。
 
 ### 文档
 

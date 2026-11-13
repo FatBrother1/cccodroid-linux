@@ -680,6 +680,18 @@ do_install() {
   # 7d) Claude Code 本体：专有软件，发行包不随附。缺了就从 npm 官方平台包装（验签 + sha512 + 试跑），
   #     装到 <版本>/runtime/claude；没网就先跳过，之后可运行 cccodroid install-claude 重试。
   local clbin="$vdir/runtime/claude"
+  # bundle 不带 Claude Code 时，优先继承同一前缀里旧版本已有的二进制，避免更新时重新下载（也更省流量）。
+  if [ ! -x "$clbin" ]; then
+    local oldcl=""
+    for oldcl in "$PREFIX"/versions/*/runtime/claude; do
+      [ -x "$oldcl" ] || continue
+      if cp -L "$oldcl" "$clbin" 2>/dev/null; then
+        chmod 755 "$clbin" 2>/dev/null || true
+        log "继承已安装的 Claude Code：$oldcl"
+        break
+      fi
+    done
+  fi
   if [ ! -x "$clbin" ] && [ -f "$vdir/bin/install-claude.mjs" ] && { [ -x "$vdir/runtime/node/bin/node" ] || [ -x "$vdir/runtime/node/node" ]; }; then
     local nodebin="$vdir/runtime/node/bin/node"; [ -x "$nodebin" ] || nodebin="$vdir/runtime/node/node"
     log "本安装包不含 Claude Code（Anthropic 专有软件），正在从 npm 官方平台包安装…"
