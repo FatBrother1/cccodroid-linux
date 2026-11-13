@@ -48,7 +48,7 @@ cccodroid open          # 打开原生窗口
 
 ### Debian / Ubuntu 的一键 .deb
 
-Debian / Ubuntu（amd64）也可以直接装 `.deb`，系统装到 `/opt/cccodroid`，首次运行 `cccodroid` 时为当前用户初始化：
+`.deb` 单独发布在 [v0.1.0-deb](https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.0-deb)。Debian / Ubuntu（amd64）也可以直接装，系统装到 `/opt/cccodroid`，首次运行 `cccodroid` 时为当前用户初始化：
 
 ```bash
 sudo apt install ./cccodroid_0.1.0_amd64.deb

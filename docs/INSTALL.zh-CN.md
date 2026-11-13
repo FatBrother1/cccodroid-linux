@@ -35,8 +35,8 @@
 
 ## 三、Debian / Ubuntu 用 .deb 一键安装（可选）
 
-如果你用的是 **Debian / Ubuntu**（不是 Steam Deck），可以不看后面的解压步骤，直接下载
-`cccodroid_0.1.0_amd64.deb`，然后：
+如果你用的是 **Debian / Ubuntu**（不是 Steam Deck），可以不看后面的解压步骤：到
+[这个单独的 .deb 发布页](https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.0-deb) 下载 `cccodroid_0.1.0_amd64.deb`，然后：
 
 ```bash
 cd ~/Downloads
