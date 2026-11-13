@@ -24,9 +24,9 @@
 
 1. 打开浏览器，进这个页面：
 
-   <https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.0>
+   <https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.1>
 
-2. 在下面的 **Assets** 里点 `cccodroid-0.1.0-linux-x86_64.tar.gz` 下载（约 102 MB）。
+2. 在下面的 **Assets** 里点 `cccodroid-0.1.1-linux-x86_64.tar.gz` 下载（约 102 MB）。
    旁边的 `.sha256`、`.sig` 是校验文件，普通用户不用管。
 
 > Steam Deck 用户：先按 Steam 键 → 电源 → **切换到桌面模式**，在桌面上的浏览器里下载。
@@ -36,11 +36,11 @@
 ## 三、Debian / Ubuntu 用 .deb 一键安装（可选）
 
 如果你用的是 **Debian / Ubuntu**（不是 Steam Deck），可以不看后面的解压步骤：到
-[这个单独的 .deb 发布页](https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.0-deb) 下载 `cccodroid_0.1.0_amd64.deb`，然后：
+[这个单独的 .deb 发布页](https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.1-deb) 下载 `cccodroid_0.1.1_amd64.deb`，然后：
 
 ```bash
 cd ~/Downloads
-sudo apt install ./cccodroid_0.1.0_amd64.deb
+sudo apt install ./cccodroid_0.1.1_amd64.deb
 cccodroid open
 ```
 
@@ -54,9 +54,9 @@ cccodroid open
 
 ### 方法 A：用文件管理器（推荐新手）
 
-1. 打开「下载」文件夹，找到刚下好的 `cccodroid-0.1.0-linux-x86_64.tar.gz`。
+1. 打开「下载」文件夹，找到刚下好的 `cccodroid-0.1.1-linux-x86_64.tar.gz`。
 2. 右键 → **解压到此处**（Extract Here）。
-3. 会多出一个文件夹 `cccodroid-0.1.0`。
+3. 会多出一个文件夹 `cccodroid-0.1.1`。
 
 ### 方法 B：用终端
 
@@ -64,8 +64,8 @@ cccodroid open
 
 ```bash
 cd ~/Downloads
-tar -xzf cccodroid-0.1.0-linux-x86_64.tar.gz
-cd cccodroid-0.1.0
+tar -xzf cccodroid-0.1.1-linux-x86_64.tar.gz
+cd cccodroid-0.1.1
 ```
 
 ---
@@ -75,7 +75,7 @@ cd cccodroid-0.1.0
 在解压出来的文件夹里打开终端（文件管理器里右键「在此处打开终端」），或者在终端里：
 
 ```bash
-cd ~/Downloads/cccodroid-0.1.0
+cd ~/Downloads/cccodroid-0.1.1
 ./install.sh
 ```
 
@@ -84,11 +84,11 @@ cd ~/Downloads/cccodroid-0.1.0
 
 安装过程会做这些事：
 
-1. 解包到 `~/.local/share/cccodroid/versions/0.1.0`；
+1. 解包到 `~/.local/share/cccodroid/versions/0.1.1`；
 2. **自动下载 Claude Code**（联网，约 110 MB，等一两分钟）；
 3. 生成桌面图标和启动器。
 
-看到 `已安装 cccodroid 0.1.0` 就成功了。
+看到 `已安装 cccodroid 0.1.1` 就成功了。
 
 > 如果提示 `Permission denied`，先执行 `chmod +x install.sh` 再运行。
 > 如果 Claude Code 没下载成功（网络问题），安装仍会继续；装完后运行
@@ -168,7 +168,7 @@ cccodroid steam add
 手动更新（网络不好、或者想自己控制）时，下载新的 tar.gz，解压后运行：
 
 ```bash
-cd ~/Downloads/cccodroid-0.1.0
+cd ~/Downloads/cccodroid-0.1.1
 ./install.sh --force
 ```
 
@@ -228,7 +228,7 @@ cd ~/Downloads/cccodroid-0.1.0
 
 ```text
 ~/.local/share/cccodroid/
-├── versions/0.1.0/   # 程序本体
+├── versions/0.1.1/   # 程序本体
 ├── current           # 指向正在用的版本
 ├── home/             # 配置、会话、日志
 └── workspace/        # 你让 Claude 干活的地方

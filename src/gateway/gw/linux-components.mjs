@@ -7,6 +7,7 @@
 //   · 自定义组件：用户导入 x86_64 ELF / AppImage / 脚本，复制到
 //     <前缀>/home/.cccodroid/custom/<id>，生成同名命令和 Claude 技能；可随时移除。
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
@@ -23,6 +24,19 @@ const CUSTOM_DIR = path.join(CFG.home, ".cccodroid", "custom");
 const SKILLS = path.join(CFG.home, ".claude", "skills");
 const REC = "cccodroid-custom.json";
 const CMD_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
+// 网关把 HOME / XDG_* 收进了应用自己的 home（会话、配置都留在前缀里）。
+// Flatpak 的用户安装和 remote 是按 HOME / XDG_DATA_HOME 找的：直接用网关环境会看不到
+// 用户自己的 flathub，报 `No remote refs found for 'flathub'`。这里用 passwd 里的真实 home。
+const REAL_HOME = os.userInfo().homedir;
+const flatpakEnv = () => ({
+  ...process.env,
+  HOME: REAL_HOME,
+  XDG_DATA_HOME: path.join(REAL_HOME, ".local", "share"),
+  XDG_CONFIG_HOME: path.join(REAL_HOME, ".config"),
+  XDG_CACHE_HOME: path.join(REAL_HOME, ".cache"),
+  XDG_STATE_HOME: path.join(REAL_HOME, ".local", "state"),
+});
+const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 
 // 可选组件清单：method=flatpak 用户级安装；download 官方静态包；guide 只给命令。
 const CATALOG = [
@@ -76,7 +90,7 @@ async function versionOf(bin, args) {
 async function flatpakVersion(pkg) {
   if (!which("flatpak")) return "";
   try {
-    const { stdout } = await run("flatpak", ["info", "--show-version", pkg], { timeout: 5000 });
+    const { stdout } = await run("flatpak", ["info", "--show-version", pkg], { timeout: 5000, env: flatpakEnv() });
     return String(stdout || "").trim().slice(0, 40);
   } catch { return ""; }
 }
@@ -141,6 +155,10 @@ async function removeComponent(it) {
     try {
       const st = fs.lstatSync(p);
       if (st.isSymbolicLink() && fs.readlinkSync(p).includes(path.join("components", it.id))) fs.unlinkSync(p);
+      else if (st.isFile()) {
+        const t = fs.readFileSync(p, "utf8");
+        if (t.includes("cccodroid 可选组件") && it.pkg && t.includes(`run ${shq(it.pkg)}`)) fs.unlinkSync(p);
+      }
     } catch {}
   }
   fs.rmSync(dir, { recursive: true, force: true });
@@ -246,7 +264,15 @@ export async function routeLinuxComponents(req, res, u, p) {
     try {
       if (it.method === "guide") return sendJson(res, 200, { ok: false, message: it.guide, guide: it.guide });
       if (it.method === "flatpak") {
-        await run("flatpak", ["install", "-y", "--user", "flathub", it.pkg], { timeout: 900000, maxBuffer: 8 << 20 });
+        await run("flatpak", ["remote-add", "--user", "--if-not-exists", "flathub", "https://flathub.org/repo/flathub.flatpakrepo"], { timeout: 120000, env: flatpakEnv(), maxBuffer: 8 << 20 });
+        await run("flatpak", ["install", "-y", "--user", "flathub", it.pkg], { timeout: 900000, env: flatpakEnv(), maxBuffer: 8 << 20 });
+        // 给 Claude 一个普通命令名：网关的 PATH 里有 <前缀>/prefix/bin，包装脚本负责带上真实 HOME。
+        const fp = which("flatpak") || "flatpak";
+        const env = flatpakEnv();
+        const wrapper = path.join(BIN_DIR, it.bins[0]);
+        fs.mkdirSync(BIN_DIR, { recursive: true });
+        fs.writeFileSync(wrapper, `#!/bin/sh\n# cccodroid 可选组件「${it.name}」（Flatpak）\nexec env HOME=${shq(env.HOME)} XDG_DATA_HOME=${shq(env.XDG_DATA_HOME)} XDG_CONFIG_HOME=${shq(env.XDG_CONFIG_HOME)} XDG_CACHE_HOME=${shq(env.XDG_CACHE_HOME)} ${shq(fp)} run ${shq(it.pkg)} "$@"\n`);
+        fs.chmodSync(wrapper, 0o755);
         return sendJson(res, 200, { ok: true, message: tz("已安装 {n}", { n: it.name }) });
       }
       const bins = await installDownload(it);

@@ -1,5 +1,30 @@
 # 变更记录
 
+## v0.1.1（2026-11-13）
+
+在 0.1.0 基础上的修复版。版本号统一为 **0.1.1**。
+
+### 修正
+
+- 产品标识统一为 **cccodroid Steam Deck 0.1.1**：更新页和 GitHub Release 标题都带 `Steam Deck`，
+  避免把移植版的版本号当成上游 cccodroid 的版本号。
+- 桌面只保留一个 cccodroid 快捷方式；应用图标改用上游 cccodroid 的图标（192×192 PNG）。
+- 设置 → 更新：同时检查「cccodroid 本体」和「Claude Code」；应用本体可从 GitHub Releases 下载更新。
+- 修正 Claude Code 当前版本高于 stable 渠道时被误显示为「有新版本」（点下去是降级）的问题；
+  「检查更新」现在会立即给出反馈。
+- 新增 `scripts/sync-upstream.sh` 与 `docs/UPSTREAM.md`：记录上游基线 v0.6.17，可对照 v0.6.20 的网关改动。
+- 扩展页恢复「可选组件 / 自定义组件」两块，并按 Linux 适配：组件清单改为 Linux 可用的
+  Chromium、FFmpeg、yt-dlp、restic、apktool 等（能用户级安装的直接装，需要 root 的给命令）；
+  自定义组件支持导入 x86_64 程序 / AppImage / 脚本，生成同名命令和 Claude 技能。
+- 修正 Flatpak 组件安装报 `No remote refs found for 'flathub'`：网关把 HOME/XDG 收进了应用目录，
+  看不到用户自己的 flathub；现在 Flatpak 安装改用真实用户环境，装完生成 `chromium` 等包装命令。
+
+### 文档
+
+- `README` 增加「在 Steam Deck 上，它到底能帮你干什么」：agent 的工具清单、能做的事和使用边界。
+- 新增 [`docs/STEAMDECK.zh-CN.md`](docs/STEAMDECK.zh-CN.md)：Decky 插件安装、只读根分区、软件安装路线选择、
+  六个真实场景、游戏模式用法、提示词写法和常见报错对照表。
+
 ## v0.1.0（2026-11-13）
 
 第一个公开版本。版本号 0.1.0，基于上游 cccodroid 网关源码。
@@ -19,25 +44,6 @@
   让 Claude 操作原生窗口里的页面。
 - 更新链路：本地文件/在线更新、签名验证、`rollback`、`prune`。
 - `cccodroid doctor` 体检、`cccodroid tools-doc` 工具清单。
-
-### 修正
-
-- 产品标识统一为 **cccodroid Steam Deck 0.1.0**：更新页和 GitHub Release 标题都带 `Steam Deck`，
-  避免把移植版的 0.1.0 当成上游 cccodroid 的版本号。
-- 桌面只保留一个 cccodroid 快捷方式；应用图标改用上游 cccodroid 的图标（192×192 PNG）。
-- 设置 → 更新：同时检查「cccodroid 本体」和「Claude Code」；应用本体可从 GitHub Releases 下载更新。
-- 修正 Claude Code 当前版本高于 stable 渠道时被误显示为「有新版本」（点下去是降级）的问题；
-  「检查更新」现在会立即给出反馈。
-- 新增 `scripts/sync-upstream.sh` 与 `docs/UPSTREAM.md`：记录上游基线 v0.6.17，可对照 v0.6.20 的网关改动。
-- 扩展页恢复「可选组件 / 自定义组件」两块，并按 Linux 适配：组件清单改为 Linux 可用的
-  Chromium、FFmpeg、yt-dlp、restic、apktool 等（能用户级安装的直接装，需要 root 的给命令）；
-  自定义组件支持导入 x86_64 程序 / AppImage / 脚本，生成同名命令和 Claude 技能。
-
-### 文档
-
-- `README` 增加「在 Steam Deck 上，它到底能帮你干什么」：agent 的工具清单、能做的事和使用边界。
-- 新增 [`docs/STEAMDECK.zh-CN.md`](docs/STEAMDECK.zh-CN.md)：Decky 插件安装、只读根分区、软件安装路线选择、
-  五个真实场景、提示词写法和常见报错对照表。
 
 ### 移除（Android 专属功能，Linux 用不到）
 
