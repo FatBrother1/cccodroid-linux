@@ -46,6 +46,19 @@ cccodroid open          # 打开原生窗口
 需要能访问 npm 源；装不上时之后再运行 `cccodroid install-claude` 重试，离线环境用
 `cccodroid install-claude --from /路径/claude`。
 
+### Debian / Ubuntu 的一键 .deb
+
+Debian / Ubuntu（amd64）也可以直接装 `.deb`，系统装到 `/opt/cccodroid`，首次运行 `cccodroid` 时为当前用户初始化：
+
+```bash
+sudo apt install ./cccodroid_0.1.0_amd64.deb
+cccodroid open
+```
+
+卸载：`sudo apt remove cccodroid`（用户数据在 `~/.local/share/cccodroid`，需自行删除）。
+
+> **SteamOS 是 Arch 系、根分区只读，不能用 .deb**；Steam Deck 请用上面的 tar.gz 安装包。
+
 更细的安装、更新、回滚、卸载说明见 [`cccodroid-linux/README.zh-CN.md`](cccodroid-linux/README.zh-CN.md)。
 
 ## 从源码构建

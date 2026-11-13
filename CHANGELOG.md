@@ -8,6 +8,8 @@
 
 - 可直接安装的发行包（`cccodroid-0.1.0-linux-x86_64.tar.gz`）：解压后 `./install.sh` 即可；
   首次安装会从 npm 官方平台包安装 Claude Code（不随包分发）。
+- Debian / Ubuntu 的 `.deb` 一键安装包（`cccodroid_0.1.0_amd64.deb`）：系统装到 `/opt/cccodroid`，
+  首次运行时为当前用户初始化；SteamOS 不能用 .deb。
 - Qt6 原生窗口外壳：单实例、缩放/全屏、大小记忆、下载与文件选择、控制台日志。
 - Steam 游戏模式入口：`cccodroid steam add|remove|status`，手柄映射与前台启动脚本。
 - 桌面通知：任务完成、等你确认、定时任务结果。

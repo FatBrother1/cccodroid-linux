@@ -33,6 +33,23 @@
 
 ---
 
+## 三、Debian / Ubuntu 用 .deb 一键安装（可选）
+
+如果你用的是 **Debian / Ubuntu**（不是 Steam Deck），可以不看后面的解压步骤，直接下载
+`cccodroid_0.1.0_amd64.deb`，然后：
+
+```bash
+cd ~/Downloads
+sudo apt install ./cccodroid_0.1.0_amd64.deb
+cccodroid open
+```
+
+第一次运行 `cccodroid` 时会自动为当前用户初始化（下载 Claude Code、建数据目录），
+过程和解压安装一样。卸载：`sudo apt remove cccodroid`。
+
+> **Steam Deck / SteamOS 不要用 .deb**：SteamOS 是 Arch 系且根分区只读，装不了。
+> Deck 用户继续看下面的解压安装。
+
 ## 三、解压
 
 ### 方法 A：用文件管理器（推荐新手）
