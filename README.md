@@ -6,6 +6,8 @@ SteamOS / Arch 系桌面上：一个 Qt6 原生窗口、一套 systemd 用户服
 
 **本项目是社区移植，不是 cccodroid 官方项目。** 上游版权归 Grey Oak 与 cccodroid 贡献者所有，详见「致谢」。
 
+![cccodroid-linux 界面](docs/ui.png)
+
 ## 特性
 
 - **原生窗口**：Qt6 WebEngine 外壳（`desktop/main.qml`），窗口缩放/全屏/大小记忆、下载与文件选择、控制台日志。
