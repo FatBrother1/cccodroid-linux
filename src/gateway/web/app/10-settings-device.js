@@ -66,7 +66,7 @@
       <label class="searchbox mp-sb"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input class="mp-q" type="search" inputmode="decimal" autocomplete="off" placeholder="${t("搜索版本号")}"></label>
       <div class="mp-list"><div class="tiny">${t("读取中…")}</div></div>
       <div class="tiny mp-note">${t("登录、会话和设置不受影响；版本越旧，越可能缺新功能。")}</div>
-      <div class="tiny mp-note">${t("「已验证」：维护者在真机上跑过这一版（下载、调用工具、接着上次的会话）。标了「有已知问题」的版本，自动更新不会装。")}</div></div>`;
+      </div>`;
     OV.open(m, { kind: "modal", keep: true, cover: true });
     const close = () => OV.close(m);
     m.addEventListener("click", (e) => { if (e.target === m || e.target.closest(".mp-x")) close(); });
@@ -74,23 +74,15 @@
     try { info = await api("/api/claude/versions?lang=" + encodeURIComponent(I18N.lang || "zh")); } catch (e) { info = { ok: false, message: e.message, versions: [] }; }
     if (!m.isConnected) return;
     const chBox = m.querySelector(".ccv-ch"), list = m.querySelector(".mp-list"), q = m.querySelector(".mp-q");
-    const ver = info.verified || {}, bad = info.bad || {};
-    // 验证状态：验过的写上在哪台设备上验的；有问题的给出原因（维护者经 cccodroid.net 发布的签名记录，见 gw/ccverified.mjs）
-    // 网关已把 targetSdk 传下来：28 包和 36 包走的执行方式不同，验过的是哪一种要写出来（构建报告第四节）
-    const sdk = (r) => (r.targetSdk ? ` · targetSdk ${r.targetSdk}` : "");
-    const vTip = (v) => ver[v] ? t("真机验证过：{who}", { who: ver[v].map((r) => `${r.device} · Android ${r.android}${sdk(r)}（${r.at}）`).join("；") }) : "";
-    // 标记后面直接写在哪台设备上验的（手机上长按看不到 title）：第一台 + 「等 N 台」
-    const okMark = (v) => `<b class="ccv-ok">${t("已验证")}</b> · ${esc(`${ver[v][0].device} · Android ${ver[v][0].android}${sdk(ver[v][0])}`)}${ver[v].length > 1 ? " " + esc(t("等 {n} 台", { n: ver[v].length })) : ""}`;
-    const badLine = (v) => bad[v] ? `<small class="ccv-bad">${esc(t("有已知问题：{why}", { why: bad[v].text }) + (bad[v].fixed ? " · " + t("{v} 已修", { v: bad[v].fixed }) : ""))}</small>` : "";
-    const chRow = (ch, v, sub) => `<button type="button" class="mp-item${mode === ch ? " cur" : ""}" data-ch="${ch}"${vTip(v) ? ` title="${esc(vTip(v))}"` : ""}><span>${t("跟随 {ch}", { ch })}${v ? " · " + esc(v) : ""}</span><small>${esc(sub)}${v && ver[v] ? " · " + okMark(v) : v && !bad[v] ? " · " + t("还没验证") : ""}</small>${badLine(v)}</button>`;
+    const chRow = (ch, v, sub) => `<button type="button" class="mp-item${mode === ch ? " cur" : ""}" data-ch="${ch}"><span>${t("跟随 {ch}", { ch })}${v ? " · " + esc(v) : ""}</span><small>${esc(sub)}</small></button>`;
     chBox.innerHTML = chRow("stable", info.stable, t("官方稳定渠道")) + chRow("latest", info.latest, t("最新发布，比 stable 新，也可能没那么稳"));
     const tags = (v) => [v === info.stable ? "stable" : "", v === info.latest ? "latest" : "", v === it.current ? t("当前装的") : "", mode === "pinned" && v === pin ? t("已固定") : ""].filter(Boolean).join(" · ");
     const paint = () => {
       const kw = q.value.trim();
       const vs = (info.versions || []).filter((v) => !kw || v.includes(kw));
       list.innerHTML = vs.slice(0, 200).map((v) => {
-        const tg = esc(tags(v)), ok = ver[v] ? okMark(v) : "";
-        return `<button type="button" class="mp-item${mode === "pinned" && v === pin ? " cur" : ""}" data-v="${esc(v)}"${vTip(v) ? ` title="${esc(vTip(v))}"` : ""}><span>${esc(v)}</span>${tg || ok ? `<small>${[tg, ok].filter(Boolean).join(" · ")}</small>` : ""}${badLine(v)}</button>`;
+        const tg = esc(tags(v));
+        return `<button type="button" class="mp-item${mode === "pinned" && v === pin ? " cur" : ""}" data-v="${esc(v)}"><span>${esc(v)}</span>${tg ? `<small>${tg}</small>` : ""}</button>`;
       }).join("")
         || `<div class="tiny">${info.versions && info.versions.length ? t("没有匹配的版本") : esc(info.message || t("取不到版本列表"))}</div>`;
     };

@@ -18,13 +18,8 @@ test("密钥、凭据、设备敏感工具：要问", () => {
     ["Bash", { command: "base64 release.keystore" }],
     ["Read", { file_path: "/x/.claude/.credentials.json" }],
     ["Bash", { command: "cat server.key" }],
-    ["mcp__device__screen_read", {}],
-    ["mcp__device__screen_tap", { x: 1, y: 2 }],
-    ["mcp__device__clipboard_read", {}],
-    ["mcp__device__share_file", { path: "/sdcard/a.txt" }],
   ];
   for (const [tool, inp] of hit) assert.ok(judge(tool, inp), `${tool} ${JSON.stringify(inp)}`);
-  assert.equal(judge("mcp__device__screenshot", {}).cat, "device:screen");
   assert.match(judge("Read", { file_path: "/p/.env" }).cat, /^secret:/);
 });
 
@@ -37,8 +32,6 @@ test("日常操作：不问", () => {
     ["Edit", { file_path: "/proj/keyboard.js" }],
     ["Grep", { pattern: "apiKey", path: "/proj/src" }],
     ["Write", { file_path: "/proj/docs/ssh.md" }],
-    ["mcp__device__notify", { title: "x" }],
-    ["mcp__device__open", { kind: "url" }],
     ["WebFetch", { url: "https://example.com/.env" }],
   ];
   for (const [tool, inp] of miss) assert.equal(judge(tool, inp), null, `${tool} ${JSON.stringify(inp)}`);

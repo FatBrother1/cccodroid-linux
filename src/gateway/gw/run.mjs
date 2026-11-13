@@ -28,7 +28,6 @@ import { claudeSeal, sealStillValid } from "./claudeseal.mjs";
 import { gwRuntimeBlocked } from "./gwpin.mjs";
 import { tamperNote, tamperRecord, tamperRetell } from "./tamper.mjs";
 import { SPOOF_NOTE, checkSession, integrityHint, integrityNote, neutralizeMarkers, sealSession, sessionAnchor } from "./integrity.mjs";
-import { ruleblockHint } from "./ruleblock.mjs";
 import { recordExtra } from "./lineage-store.mjs";
 import { refNote, refNoteSync } from "./merge.mjs";
 import { projectRisks, projectTrusted, trustProject } from "./projtrust.mjs";
@@ -347,9 +346,9 @@ export async function startRun(item) {
   // 和用户自己的追加提示合成一条：重复给同一个单值参数，解析器一般只留一个，合成一条最稳
   // 建档（脉络）：常驻规则 + 这一轮该不该先建档（见 archive.mjs）
   const arch = P.local ? null : await archiveHint(run.sessionId).catch(() => null);
-  const appendPrompt = [toolsHint(), !P.nativeModels && !P.local ? TASKS_HINT : "", P.local ? "" : previewHint(cwd), P.local ? "" : integrityHint(), P.local ? "" : ruleblockHint(), arch?.rule].filter(Boolean).join("\n\n");
+  const appendPrompt = [toolsHint(), !P.nativeModels && !P.local ? TASKS_HINT : "", P.local ? "" : previewHint(cwd), P.local ? "" : integrityHint(), arch?.rule].filter(Boolean).join("\n\n");
   // 子代理（连孙代理）统一的联络规矩：用 agentId 发消息、summary 写事由、长内容落文件只发路径（见 agents.mjs）
-  const subPrompt = !P.local && !message.trim().startsWith("/") ? SUBAGENT_HINT + "\n\n" + integrityHint() + "\n\n" + ruleblockHint() : "";
+  const subPrompt = !P.local && !message.trim().startsWith("/") ? SUBAGENT_HINT + "\n\n" + integrityHint() : "";
   // 这两段在起进程紧前写成文件再交（见 promptFiles）
   // claude 没有 --output-style 参数（传了直接 unknown option，整条消息失败）；它是 settings 里的 outputStyle。
   // 密钥读取器也在这里（见 settingsArgs）

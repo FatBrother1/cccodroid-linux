@@ -100,9 +100,6 @@
     const c = String(g.cat || "");
     if (c === "userconf") return (i?.changes || []).length ? t("会交给 Claude 的用户级配置有变化，没经过你确认") : t("之前的对话留下了还在运行的后台程序");
     if (c === "error") return t("安全检查自己出错了，判断不了这一步");
-    if (c === "device:screen") return t("要读屏幕或替你操作别的应用（{w}）", { w: g.what });
-    if (c === "device:clipboard") return t("要读剪贴板");
-    if (c === "device:share") return t("要把文件分享到别的应用");
     if (c === "project") return t("这个项目带了打开就会自动运行的配置（钩子、MCP 服务器等）");
     // what 是「英文类别: 命中的那段路径」，界面只显示路径那段
     const w = String(g.what || ""), k = w.indexOf(": ");

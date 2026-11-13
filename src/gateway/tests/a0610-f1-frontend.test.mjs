@@ -97,7 +97,6 @@ test("底部确认条：单张敏感卡带风险说明给「允许」，配置�
   const quick = new Function(`const ${simpleSrc} ${quickSrc} return quick;`)();
   const P = (tool, guard) => ({ p: { tool, guard, input: {} } });
   assert.equal(quick(P("Bash")), true);
-  assert.equal(quick(P("mcp__device__clipboard_read", { cat: "device:clipboard", what: "" })), true);
   assert.equal(quick(P("Read", { cat: "secret", what: "key: ~/.ssh/id_ed25519" })), true);
   assert.equal(quick(P("Bash", { cat: "userconf", what: "~/.claude" })), false);
   assert.equal(quick(P("Bash", { cat: "project", what: "/w" })), false);

@@ -88,7 +88,7 @@ test("195-W.3：空闲轮次收尾定时器在跑时插话 → 定时器撤掉�
   await until(() => endOf("a0610-idle"), 10000);
 });
 
-test("199 11-07：敏感操作批准一次只放行同一个目标——同类别的另一个密钥照样问；读屏这类设备操作仍按类别", async () => {
+test("199 11-07：敏感操作批准一次只放行同一个目标——同类别的另一个密钥照样问", async () => {
   SETTINGS.permissionMode = "default";
   const s = crypto.randomUUID();
   const g = (id, cat, what, tool = "Read") => ({ type: "control_request", request_id: id, request: { subtype: "can_use_tool", tool_name: tool, input: { file_path: "/x" }, tool_use_id: "tu-" + id,
@@ -96,15 +96,12 @@ test("199 11-07：敏感操作批准一次只放行同一个目标——同类�
   // 等 stdin 上的回应再发下一条（以前按 sleep 卡时间，全量跑负载高时批准还没落就发了下一条）：
   // 读到带那条请求号的回应为止
   const rd = (id) => ({ raw: `while read l; do case "$l" in *'"${id}"'*) break;; esac; done` });
-  script([init(s), g("k-a", "secret:keys", "keys: a.json"), rd("k-a"), g("k-c", "secret:keys", "keys: a.json"), g("k-b", "secret:keys", "keys: b.json"), rd("k-b"),
-    g("d-a", "device:screen", "screen_tap", "mcp__device__screen_tap"), rd("d-a"), g("d-b", "device:screen", "screen_read", "mcp__device__screen_read"), rd("d-b"), result], 0);
+  script([init(s), g("k-a", "secret:keys", "keys: a.json"), rd("k-a"), g("k-c", "secret:keys", "keys: a.json"), g("k-b", "secret:keys", "keys: b.json"), rd("k-b"), result], 0);
   await startRun({ id: "a0610-guardkey", message: "fixture", cwd: root, permissionMode: "default" });
   // 只看这一轮的：上一条测试插话排进队列的那轮也在跑同一个假 CLI，请求号一样
   const asked = (id) => events.some((e) => e.type === "perm_request" && e.id === id && e.runId === "a0610-guardkey");
   await until(() => asked("k-a"));
   RUNS.get("a0610-guardkey").answerPerm("k-a", { behavior: "allow" });
-  await until(() => asked("d-a"), 5000);
-  RUNS.get("a0610-guardkey").answerPerm("d-a", { behavior: "allow" });
   await until(() => endOf("a0610-guardkey"), 10000);
   assert.equal(asked("k-c"), false, "同一个目标不再问");
   assert.equal(asked("k-b"), true, "同类别的另一个密钥要问");

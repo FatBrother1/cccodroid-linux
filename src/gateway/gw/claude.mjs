@@ -42,7 +42,7 @@ export function guardHooks(app = APP) {
   const src = guardSource(app);
   if (!src) return null;
   const q = (x) => "'" + String(x).replace(/'/g, "'\\''") + "'";
-  const matcher = "Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|mcp__device__.*";
+  const matcher = "Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob";
   if (src === BAD) {
     // 核不过：这一层不能换成别的，也不能整层不挂。挂一个一律拦下的（PreToolUse 退出码 2 = 不许用），等空闲重启按安装包还原
     log("⚠️ [应用文件] guard / breach.mjs 和安装包对不上，敏感工具这一轮一律拦下");

@@ -83,13 +83,6 @@ const PROMPT = [
 ];
 const WRITERS = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
-// 设备工具（mcp 服务器名叫 device）：会读到别的应用内容、替用户操作别的应用、把文件交出去的
-const DEVICE = {
-  screen_read: "device:screen", screenshot: "device:screen", screen_tap: "device:screen",
-  screen_swipe: "device:screen", screen_type: "device:screen", screen_key: "device:screen",
-  clipboard_read: "device:clipboard", share_file: "device:share",
-};
-
 // 破甲特征（gw/breach.mjs）：网关挂钩子时把核过的那份源码拼在本文件前面（见 gw/claude.mjs guardSource）；单独跑本文件时现加载
 let scanTextFn = typeof scanText === "function" ? scanText : null;   // eslint-disable-line no-undef
 if (!scanTextFn) try { ({ scanText: scanTextFn } = await import(new URL("../gw/breach.mjs", import.meta.url))); } catch {}
@@ -154,8 +147,6 @@ function normCmd(s) {
 }
 
 export function judge(tool, inp) {
-  const m = /^mcp__device__(.+)$/.exec(String(tool || ""));
-  if (m && DEVICE[m[1]]) return { cat: DEVICE[m[1]], what: m[1] };
   const list = strings(tool, inp);
   // Bash 命令：原文和归一后的两条都查（归一后能认出拼接/展开/base64 改形的密钥路径）
   const texts = list.flatMap((s) => (tool === "Bash" && typeof s === "string" && s ? [s, normCmd(s)] : [s]));
