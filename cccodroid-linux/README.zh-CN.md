@@ -130,7 +130,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ~/.config/systemd/user/cccodroid-gateway.service             # systemd 用户服务
 ~/.config/systemd/user/cccodroid-ui.service                  # 原生窗口服务（不自启，cccodroid open 来拉起）
 ~/.local/share/applications/cccodroid.desktop                # 桌面条目
-~/.local/share/icons/hicolor/scalable/apps/cccodroid.svg     # 图标
+~/.local/share/icons/hicolor/192x192/apps/cccodroid.png      # 图标（上游图标）
 ```
 
 `current` 是**相对**软链（指向 `versions/<版本>`）。更新时先完整解包新版本，
@@ -612,7 +612,7 @@ desktop/bridge.js                         # window.CCApp 垫片（QWebChannel）
 desktop/gamepad.js                        # 游戏模式手柄映射
 templates/cccodroid-gateway.service.in    # systemd 用户服务模板
 templates/cccodroid.desktop.in            # 桌面条目模板
-templates/cccodroid.svg                   # 图标
+templates/cccodroid.png                   # 图标（来自上游 cccodroid）
 bridge/                                   # 内置 OpenAI 本地桥（组件源码 + 预装依赖）
 ui-mcp/                                   # 页面操控 MCP（stdio 服务，无依赖）
 README.zh-CN.md                           # 本文件

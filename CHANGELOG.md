@@ -20,6 +20,14 @@
 - 更新链路：本地文件/在线更新、签名验证、`rollback`、`prune`。
 - `cccodroid doctor` 体检、`cccodroid tools-doc` 工具清单。
 
+### 修正
+
+- 桌面只保留一个 cccodroid 快捷方式；应用图标改用上游 cccodroid 的图标（192×192 PNG）。
+- 设置 → 更新：同时检查「cccodroid 本体」和「Claude Code」；应用本体可从 GitHub Releases 下载更新。
+- 修正 Claude Code 当前版本高于 stable 渠道时被误显示为「有新版本」（点下去是降级）的问题；
+  「检查更新」现在会立即给出反馈。
+- 新增 `scripts/sync-upstream.sh` 与 `docs/UPSTREAM.md`：记录上游基线 v0.6.17，可对照 v0.6.20 的网关改动。
+
 ### 文档
 
 - `README` 增加「在 Steam Deck 上，它到底能帮你干什么」：agent 的工具清单、能做的事和使用边界。

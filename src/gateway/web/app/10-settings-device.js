@@ -174,7 +174,9 @@
     followUpd(); setTimeout(loadUpd, 300);
   }
   $("upd-check").addEventListener("click", async () => {
-    // 200 + {ok:false} 也是失败，以前只接网络错误，按钮像没反应（195-M.8）
+    // 200 + {ok:false} 也是失败，以前只接网络错误，按钮像没反应（195-M.8）。
+    // 检查要访问 GitHub / npm，慢的时候几秒才有结果；先立刻给一句反馈，别让人以为按钮坏了。
+    toast(t("正在检查更新…"));
     let r = null;
     try { r = await post("/api/app/upd_check"); } catch (e2) { return toast(e2.message, true); }
     if (r && r.ok === false) toast(r.message || t("检查更新失败"), true);

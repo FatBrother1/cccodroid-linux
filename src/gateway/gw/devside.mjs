@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
-import { CFG, GLIBC_PRELOAD, PATHS, PREFIX, glibcEnv, loadPgp, log, tz } from "./config.mjs";
+import { CFG, GLIBC_PRELOAD, HERE, PATHS, PREFIX, glibcEnv, loadPgp, log, tz } from "./config.mjs";
 import { verifiedInfo } from "./ccverified.mjs";
 import { NEXT, readBody, sendJson } from "./http.mjs";
 import { notifyFocus, notifySet, notifyStatus, notifyTest } from "./notify.mjs";
@@ -15,6 +15,12 @@ const CC_BASE = "https://downloads.claude.ai/claude-code-releases";
 // （官方把同一份二进制发在 npm 平台包上；上游文档实测 package/claude 与官方直链逐字节相同）
 const LINUX = process.platform === "linux" && !PREFIX;
 const NPM_PKG = LINUX ? "@anthropic-ai/claude-code-linux-x64" : "@anthropic-ai/claude-code-linux-arm64";
+// Linux 安装布局：HERE = <前缀>/versions/<版本>/src/gateway；VERSION 在 ../../VERSION，
+// 前缀在 ../../../..（current/ 与 CLI 都在前缀下）。开发布局里读不到 VERSION，就跳过应用更新检查。
+const APP_ROOT = path.resolve(HERE, "..", "..");
+const APP_VERSION = (() => { try { return fs.readFileSync(path.join(APP_ROOT, "VERSION"), "utf8").trim(); } catch { return ""; } })();
+const APP_PREFIX = path.resolve(APP_ROOT, "..", "..");
+const APP_REPO = "FatBrother1/cccodroid-linux";
 const NPM_REG = "https://registry.npmjs.org";
 // npm registry 的签名公钥（https://registry.npmjs.org/-/npm/v1/keys，只留没过期的）；与 android/assets/scripts/install-claude.mjs 同一把。
 // 官方直链那条路有 Anthropic 的 PGP 清单签名；npm 这条路靠这把钉死的公钥验「包名@版本:integrity」的 ECDSA 签名，
@@ -22,9 +28,14 @@ const NPM_REG = "https://registry.npmjs.org";
 const NPM_KEYS = {"SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U":"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEY6Ya7W++7aUPzvMTrezH6Ycx3c+HOKYCcNGybJZSCJq/fd7Qa8uuAKtdIkUQtQiEKERhAmE5lMMJhP8OkDOa2g=="};
 const devUpd = {
   auto: true, channel: "stable", lastCheck: 0, checking: false, error: "",
+  app: { id: "cccodroid", name: "cccodroid", current: APP_VERSION, latest: "", state: "unknown", message: "", done: 0, total: 0 },
   claude: { id: "claude", name: "Claude Code", current: "", latest: "", state: "unknown", message: "", done: 0, total: 0 },
 };
 try { Object.assign(devUpd, JSON.parse(fs.readFileSync(DEV_UPD_FILE, "utf8")), { checking: false, error: "" }); devUpd.claude.state = devUpd.claude.state === "installing" ? "unknown" : devUpd.claude.state; } catch {}
+// 应用版本以磁盘上的 VERSION 为准（持久化文件里可能是上一次检查留下的旧值）。
+devUpd.app.current = APP_VERSION;
+devUpd.app.state = devUpd.app.state === "installing" ? "unknown" : (APP_VERSION ? devUpd.app.state : "unknown");
+if (!APP_VERSION) devUpd.app.message = tz("开发布局：读不到应用版本，跳过应用更新检查");
 const devUpdSave = () => { try { fs.writeFileSync(DEV_UPD_FILE, JSON.stringify(devUpd)); } catch {} };
 const cmpVer = (a, b) => {
   const x = String(a).split(/[^0-9]+/).map(Number), y = String(b).split(/[^0-9]+/).map(Number);
@@ -55,12 +66,51 @@ async function npmMeta(force = false) {
   return npmCache.data;
 }
 
+// 应用本体（cccodroid-linux）的最新发布：GitHub Releases 的 latest（只读公共 API，不需要登录）。
+let appCache = { at: 0, data: null };
+async function appLatest(force = false) {
+  if (!force && appCache.data && Date.now() - appCache.at < 600e3) return appCache.data;
+  // /releases/latest 会把 v0.1.0-deb 这种「包型发布」也算进去；这里只认
+  // 形如 v0.1.0 且带 tar.gz 的正式发布，否则会把 deb 发布的标签当成应用版本。
+  const r = await fetch(`https://api.github.com/repos/${APP_REPO}/releases?per_page=30`, {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "cccodroid-linux" },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!r.ok) throw new Error("GitHub HTTP " + r.status);
+  const list = await r.json();
+  const rel = (Array.isArray(list) ? list : []).find((x) =>
+    x && !x.draft && !x.prerelease && /^v\d+\.\d+\.\d+$/.test(String(x.tag_name || "")) &&
+    Array.isArray(x.assets) && x.assets.some((a) => String(a.name || "").endsWith(".tar.gz")));
+  if (!rel) throw new Error(tz("没有找到带 tar.gz 的正式发布"));
+  const tag = String(rel.tag_name || "");
+  const version = tag.replace(/^v/, "");
+  const assets = Array.isArray(rel.assets) ? rel.assets : [];
+  const pick = (s) => assets.find((a) => String(a.name || "").endsWith(s)) || null;
+  appCache = { at: Date.now(), data: { version, tag, tar: pick(".tar.gz"), sha: pick(".tar.gz.sha256"), sig: pick(".tar.gz.sig"), html: rel.html_url || "" } };
+  return appCache.data;
+}
+
+async function appCheck(force = false) {
+  const a = devUpd.app;
+  if (!a.current) { a.state = "unknown"; a.message = tz("开发布局：读不到应用版本"); return; }
+  try {
+    const j = await appLatest(force);
+    a.latest = j.version;
+    const d = cmpVer(j.version, a.current);
+    if (d > 0) { a.state = "available"; a.message = ""; }
+    else { a.state = "uptodate"; a.message = tz("已是最新（{v}）", { v: a.current }); }
+  } catch (e) {
+    a.state = "error"; a.message = tz("检查应用更新失败：{err}", { err: e.message });
+  }
+}
+
 // 检查途中换了渠道：这次的结果是旧渠道的，不能记到新渠道名下；结束后按新渠道再查一次（#136）
 let devUpdAgain = false;
 async function devUpdCheck() {
   if (devUpd.checking) { devUpdAgain = true; return; }
   devUpd.checking = true; devUpd.error = "";
   const c = devUpd.claude, ch = devUpd.channel;
+  await appCheck(true);
   try {
     if (!c.current || c.state !== "installing") c.current = await claudeVersionOf(PATHS.claude);
     let v = "", from = "official";
@@ -82,8 +132,15 @@ async function devUpdCheck() {
     // 已装版本要和所选渠道「一致」：从 latest 切回 stable 时版本号变小，以前判成「已是最新」就一直停在 latest 上
     if (c.state !== "installing") {
       const d = cmpVer(v, c.current);
-      c.state = d === 0 ? "uptodate" : "available";
-      c.message = d < 0 && c.current ? `切回 ${devUpd.channel} 渠道：将换成 ${v}（比当前的 ${c.current} 旧）` : devUpd.channel === "latest" ? "latest 渠道" : "";
+      // 当前版本比渠道版本新（例如 Claude Code 自动装过 latest，而 stable 还没跟上）：
+      // 这不是「有新版本」，不能把按钮画成「更新」——点下去是降级。要降级请走「版本…」。
+      if (d > 0) { c.state = "available"; c.message = devUpd.channel === "latest" ? "latest 渠道" : ""; }
+      else {
+        c.state = "uptodate";
+        c.message = d < 0 && c.current
+          ? tz("当前 {cur} 比 {ch} 渠道的 {v} 新；要降级请在「版本…」里选", { cur: c.current, ch: devUpd.channel, v })
+          : "";
+      }
     }
     devUpd.lastCheck = Date.now();
   } catch (e) { devUpd.error = LINUX ? tz("检查 Claude Code 更新失败：{err}", { err: e.message }) : tz("连不上 downloads.claude.ai：{err}", { err: e.message }); }
@@ -217,9 +274,59 @@ async function devUpdInstall() {
   } finally { devUpdSave(); }
 }
 
+/**
+ * 应用本体更新：从 GitHub Release 下载 tar.gz + .sha256 + .sig，核过 sha256 后
+ * 交给 `cccodroid update`（它自己会用已装版本的发布公钥验签、原子切 current、重启网关）。
+ * 必须放到 systemd-run 的独立 unit 里跑：update 会重启网关，网关 cgroup 里的子进程会被一起杀掉。
+ */
+async function devUpdInstallApp() {
+  const a = devUpd.app;
+  if (!a.current || a.state === "downloading" || a.state === "installing") return;
+  a.state = "downloading"; a.message = tz("正在下载…"); a.done = 0; a.total = 0; devUpdSave();
+  try {
+    const j = await appLatest(true);
+    if (!j.tar || !j.sha) throw new Error(tz("这个发布里没有 tar.gz 或 .sha256"));
+    if (cmpVer(j.version, a.current) <= 0) { a.state = "uptodate"; a.message = tz("已是最新（{v}）", { v: a.current }); devUpdSave(); return; }
+    const dir = path.join(CFG.home, "updates");
+    fs.mkdirSync(dir, { recursive: true });
+    const name = path.basename(String(j.tar.name || "cccodroid.tar.gz"));
+    const file = path.join(dir, name), part = file + ".part";
+    fs.rmSync(part, { force: true });
+    const r = await fetch(j.tar.browser_download_url, { signal: AbortSignal.timeout(600000) });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    a.total = Number(r.headers.get("content-length") || 0);
+    const out = fs.openSync(part, "w");
+    try { for await (const chunk of r.body) { fs.writeSync(out, chunk); a.done += chunk.length; } }
+    finally { fs.closeSync(out); }
+    a.message = tz("校验 sha256…"); devUpdSave();
+    const sr = await fetch(j.sha.browser_download_url, { signal: AbortSignal.timeout(20000) });
+    if (!sr.ok) throw new Error("校验文件 HTTP " + sr.status);
+    const want = (await sr.text()).trim().split(/\s+/)[0];
+    if (!/^[a-f0-9]{64}$/i.test(want)) throw new Error(tz("校验文件内容不对"));
+    const h = crypto.createHash("sha256");
+    for await (const b of fs.createReadStream(part)) h.update(b);
+    if (h.digest("hex") !== want.toLowerCase()) throw new Error(tz("sha256 不符，已放弃安装"));
+    fs.renameSync(part, file);
+    if (j.sig) {
+      const gr = await fetch(j.sig.browser_download_url, { signal: AbortSignal.timeout(20000) });
+      if (!gr.ok) throw new Error("签名文件 HTTP " + gr.status);
+      fs.writeFileSync(file + ".sig", await gr.text());
+    }
+    const cli = path.join(APP_PREFIX, "current", "bin", "cccodroid");
+    if (!fs.existsSync(cli)) throw new Error(tz("找不到 {p}", { p: cli }));
+    a.state = "installing"; a.message = tz("正在安装，完成后网关会自动重启"); devUpdSave();
+    const unit = "ccd-self-update-" + Date.now();
+    execFile("systemd-run", ["--user", "--collect", "--unit", unit, cli, "update", file], { timeout: 20000 }, (e) => {
+      if (e) { a.state = "error"; a.message = tz("启动更新失败：{err}", { err: e.message }); devUpdSave(); }
+    });
+  } catch (e) {
+    a.state = "error"; a.message = e.message; devUpdSave();
+  }
+}
+
 function devUpdStatus() {
-  const { claude, ...rest } = devUpd;
-  return { ok: true, ...rest, items: [claude] };
+  const { app, claude, ...rest } = devUpd;
+  return { ok: true, ...rest, items: [app, claude] };
 }
 
 // 自动：启动 1 分钟后、之后每 30 分钟看一眼，距上次检查超过 6 小时就查；有新版且开着自动就装
@@ -235,7 +342,7 @@ if (!PREFIX) {
 
 async function devApp(op, b) {
   if (op === "upd_status") {
-    if (!devUpd.lastCheck && !devUpd.checking) devUpdCheck();
+    if ((!devUpd.lastCheck || devUpd.app.state === "unknown") && !devUpd.checking) devUpdCheck();
     else if (!devUpd.claude.current) devUpd.claude.current = await claudeVersionOf(PATHS.claude);
     return devUpdStatus();
   }
@@ -259,7 +366,12 @@ async function devApp(op, b) {
     return devUpdStatus();
   }
   if (op === "upd_apply") {
-    if (b.item !== "claude") return { ok: false, message: tz("开发端只管 Claude Code（应用本体由你在本机构建安装）") };
+    if (b.item === "cccodroid") {
+      if (devUpd.app.state !== "available" && devUpd.app.state !== "error") return { ok: false, message: tz("应用已是最新，或先检查更新") };
+      devUpdInstallApp();
+      return { ok: true, message: tz("开始更新 cccodroid…") };
+    }
+    if (b.item !== "claude") return { ok: false, message: tz("不认识的更新项：{item}", { item: String(b.item || "") }) };
     if (devUpd.claude.state !== "available" && devUpd.claude.state !== "error") return { ok: false, message: tz("没有可装的新版，先检查更新") };
     devUpdInstall();
     return { ok: true, message: tz("开始更新 Claude Code") };

@@ -31,7 +31,7 @@ STAGE="$(mktemp -d "${TMPDIR:-/tmp}/cccodroid-deb.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 R="$STAGE/root"
 mkdir -p "$R/opt/cccodroid" "$R/usr/bin" "$R/usr/share/applications" \
-         "$R/usr/share/icons/hicolor/scalable/apps" "$R/usr/share/doc/cccodroid" "$R/DEBIAN"
+         "$R/usr/share/icons/hicolor/192x192/apps" "$R/usr/share/doc/cccodroid" "$R/DEBIAN"
 
 cp -a "$PKG_DIR/." "$R/opt/cccodroid/pkg/"
 
@@ -62,8 +62,8 @@ Categories=Development;Utility;
 StartupNotify=true
 EOF
 
-if [ -f "$PKG_DIR/templates/cccodroid.svg" ]; then
-  cp "$PKG_DIR/templates/cccodroid.svg" "$R/usr/share/icons/hicolor/scalable/apps/cccodroid.svg"
+if [ -f "$PKG_DIR/templates/cccodroid.png" ]; then
+  cp "$PKG_DIR/templates/cccodroid.png" "$R/usr/share/icons/hicolor/192x192/apps/cccodroid.png"
 fi
 for f in README.zh-CN.md; do
   [ -f "$PKG_DIR/$f" ] && cp "$PKG_DIR/$f" "$R/usr/share/doc/cccodroid/$f"

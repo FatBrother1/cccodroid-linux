@@ -30,7 +30,8 @@ SteamOS / Arch 桌面
 - 上游：<https://github.com/greyoak111/cccodroid>（Apache-2.0）。
 - `src/gateway/` 是上游网关源码的移植版本：Linux 适配 + 移除 Android 专属功能 + 内置桥/页面操控接入。
 - `cccodroid-linux/`、`docs/`、`vendor/` 是本仓库新增的移植外壳与打包/安装工具。
-- 我们不重新实现网关逻辑；上游修复与新功能通过 rebase 同步进来（见 README「与上游同步」）。
+- 我们不重新实现网关逻辑；上游修复与新功能通过「对照 + 重放移植补丁」同步进来，
+  不是 git rebase（本仓库不是上游 fork）。具体步骤见 [`UPSTREAM.md`](UPSTREAM.md)。
 
 ## 3. Linux 适配点（相对上游）
 

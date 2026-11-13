@@ -152,14 +152,20 @@ cccodroid restart     # 重启后台
 cccodroid steam add
 ```
 
-然后**完全退出 Steam 再重新打开**，游戏库里会多一个「cccodroid」。
+然后**完全退出 Steam 再重新打开**，游戏库的「非 Steam 游戏」里会多一个「cccodroid」。
+手柄：左摇杆 / 十字键滚动，A 确认，B 返回，LB / RB 翻页，Y 聚焦输入框；打字按 **STEAM + X** 调出屏幕键盘。
 建议还是用桌面模式，窗口和输入法都更顺手。
 
 ---
 
 ## 九、更新
 
-以后有更新时，下载新的 tar.gz，解压后运行：
+**在窗口里检查**：设置 → 更新 → **检查更新**。它会同时查两样东西：
+
+- **cccodroid 本体**：读 GitHub Releases 的最新正式版，和当前版本比较；有新版时可以点「更新」下载安装（需要能访问 GitHub）。
+- **Claude Code**：读 npm 官方源 / 官方渠道；有新版时点「更新」，也可以开「自动更新」。
+
+手动更新（网络不好、或者想自己控制）时，下载新的 tar.gz，解压后运行：
 
 ```bash
 cd ~/Downloads/cccodroid-0.1.0

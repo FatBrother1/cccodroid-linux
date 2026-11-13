@@ -10,6 +10,8 @@ This repository contains work derived from the following upstream projects:
     Copyright 2026 greyoak111 and contributors
     Licensed under the Apache License, Version 2.0 (see LICENSE and NOTICE.upstream).
     The gateway source under src/gateway is a modified copy of the upstream source.
+    The application icon (cccodroid-linux/templates/cccodroid.png) is taken from
+    the upstream Android resources (android/res/mipmap-xxxhdpi/ic_launcher.png).
 
   cccodroid-openai-bridge
     https://github.com/chenshi723/cccodroid-openai-bridge

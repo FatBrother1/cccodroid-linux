@@ -41,7 +41,8 @@ cccodroid 里跑的是 Claude Code，一个带工具的 agent，不是只会聊�
   作为自定义接口使用（组件来自 [cccodroid-openai-bridge](https://github.com/chenshi723/cccodroid-openai-bridge)，可选，需自备上游 API Key）。
 - **页面操控 MCP（ccui）**：Claude 可以读取原生窗口里的页面、点按、输入、滚动、截图，用来操作 cccodroid 自己的界面
   和应用内浏览器窗格。
-- **更新链路**：本地文件 / 在线更新、发布签名校验、`rollback` 回退、旧版本清理。
+- **更新链路**：本地文件 / 在线更新、发布签名校验、`rollback` 回退、旧版本清理；
+  设置 → 更新里可以检查 cccodroid 本体（GitHub Releases）和 Claude Code，Claude Code 支持自动更新。
 
 ## 不包含
 
@@ -104,15 +105,19 @@ bash cccodroid-linux/build-bundle.sh \
 ## 与上游同步
 
 - 上游：<https://github.com/greyoak111/cccodroid>（Apache-2.0）
-- 本移植基于上游网关源码，做 Linux 适配、Android 专属功能移除，并加入本地桥与页面操控 MCP。
-- 上游发新版后的流程：把上游合进本仓库的 `main`，再把本地移植提交 rebase 到新的上游之上，
-  重建发行包并重跑验收/部署脚本；冲突主要集中在网关与前端的共享文件。
+- 本移植基线：上游 **v0.6.17**（提交写在 `UPSTREAM-BASE`），做 Linux 适配、Android 专属功能移除，
+  并加入本地桥与页面操控 MCP。
+- 本仓库是**移植快照，不是 GitHub fork**，不能直接点「Sync fork」。上游发新版后的流程：
+  1. `bash scripts/sync-upstream.sh`：拉 `upstream/main`，把基线以来的网关改动写到 `dist-upstream/`；
+  2. 按 [`docs/UPSTREAM.md`](docs/UPSTREAM.md) 把改动重放进 `src/gateway/`（保留 Linux 适配与 Android 功能移除）；
+  3. 重建发行包、跑验收，最后更新 `UPSTREAM-BASE`。
 - 版本：项目与应用统一为 `0.1.0`。
 
 ## 致谢
 
 - **[cccodroid](https://github.com/greyoak111/cccodroid)** —— Grey Oak 与所有贡献者。没有上游就没有这个移植；
   本项目只做 Linux 适配和外围功能，界面与网关逻辑的绝大部分来自上游（Apache-2.0）。
+  应用图标也来自上游（`android/res/mipmap-xxxhdpi/ic_launcher.png`）。
 - **[cccodroid-openai-bridge](https://github.com/chenshi723/cccodroid-openai-bridge)** —— chenshi723（MIT），
   以及它依赖的 [Claude Code Router](https://github.com/musistudio/claude-code-router)（MIT）。
 - 网页端第三方库（xterm.js、pdf.js、KaTeX、highlight.js、eruda 等）与上游一致，许可见各文件与 `NOTICE`。

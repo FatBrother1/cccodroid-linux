@@ -253,8 +253,10 @@ UNIT_PATH="$UNIT_DIR/$SERVICE_NAME"
 UI_UNIT_PATH="$UNIT_DIR/$UI_SERVICE_NAME"
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP_PATH="$APPS_DIR/cccodroid.desktop"
-ICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
-ICON_PATH="$ICONS_DIR/cccodroid.svg"
+ICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/192x192/apps"
+ICON_PATH="$ICONS_DIR/cccodroid.png"
+# 旧版把图标装成 svg；升级时顺手清掉，避免桌面上出现两个同名图标。
+LEGACY_ICON_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/cccodroid.svg"
 
 if [ "$ACTION" = "uninstall" ]; then
   if [ -n "${CCCODROID_UNIT:-}" ]; then UNIT_PATH="$CCCODROID_UNIT"; fi
@@ -323,8 +325,8 @@ do_uninstall() {
     fi
   fi
 
-  # 4) 图标
-  rm -f "$ICON_PATH"
+  # 4) 图标（连旧版的 svg 一起删）
+  rm -f "$ICON_PATH" "$LEGACY_ICON_PATH"
 
   # 5) 启动器 shim（只删带标记的）
   if [ -f "$BIN_DIR/cccodroid" ]; then
@@ -606,15 +608,16 @@ do_install() {
   fi
 
   # 5) 图标与桌面条目。
-  if [ -f "$TEMPLATE_DIR/cccodroid.svg" ]; then
+  if [ -f "$TEMPLATE_DIR/cccodroid.png" ]; then
     mkdir -p "$ICONS_DIR"
-    cp -f "$TEMPLATE_DIR/cccodroid.svg" "$ICON_PATH"
+    cp -f "$TEMPLATE_DIR/cccodroid.png" "$ICON_PATH"
     chmod 644 "$ICON_PATH"
+    rm -f "$LEGACY_ICON_PATH"
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
       gtk-update-icon-cache -f -t "$(dirname "$(dirname "$ICONS_DIR")")" >/dev/null 2>&1 || true
     fi
   else
-    warn "模板里没有 cccodroid.svg，跳过图标"
+    warn "模板里没有 cccodroid.png，跳过图标"
   fi
   mkdir -p "$APPS_DIR"
   render_template "$TEMPLATE_DIR/cccodroid.desktop.in" "$DESKTOP_PATH"

@@ -206,7 +206,37 @@ agent 能不能帮上忙，很大程度取决于你怎么描述问题。四句�
 
 ---
 
-## 七、参考资料
+## 七、游戏模式怎么用
+
+cccodroid 可以登记成 Steam 里的「非 Steam 游戏」，在游戏模式（Game Mode）里启动：
+
+1. **先完全退出 Steam**：桌面模式右下角 Steam 菜单 → 退出；或者关机重开后在桌面模式操作。
+   Steam 开着时 `cccodroid steam add` 会拒绝写入 `shortcuts.vdf`。
+2. 在 Konsole 里运行：
+
+   ```bash
+   cccodroid steam add
+   ```
+
+   Steam 开着又不想手动退，可以加 `--restart-steam`，它会自动关掉 Steam、写入快捷方式，再把 Steam 起回来。
+3. 重新打开 Steam，进入游戏模式，库 → **非 Steam 游戏** → 找到 **cccodroid**，点启动。
+4. 启动脚本会先拉起网关，再以全屏窗口运行 cccodroid（检测到 gamescope 会自动用 kiosk 模式）。
+
+手柄操作（Steam 输入要给出标准手柄）：
+
+- 左摇杆 / 十字键：滚动
+- A：确认
+- B：返回
+- LB / RB：翻页
+- Y：聚焦输入框
+- 打字：按 **STEAM + X** 调出屏幕键盘
+
+删除快捷方式：`cccodroid steam remove`（同样要 Steam 退出，或加 `--restart-steam`）。
+
+> **验证范围**：桌面模式下用 gamescope（headless）验证过渲染和键鼠输入；真正切到游戏模式、以及手柄，没有在所有机型上实测。
+> 打字多的话，还是桌面模式更顺手。
+
+## 八、参考资料
 
 - [Steam Deck and Steam Machine Desktop: FAQ](https://help.steampowered.com/en/faqs/view/671A-4453-E8D2-323C) —— Valve 官方：Flatpak、只读镜像、
   `steamos-readonly`、默认用户为什么没有密码、更新会不会抹掉 pacman 包
