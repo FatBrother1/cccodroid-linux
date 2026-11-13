@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""给已经创建的 X11 窗口设置 _NET_WM_ICON。
+
+qml6 运行时的 Window 没有 icon 属性，Qt 会给窗口挂一个默认图标（Qml Runtime 的绿色图标），
+KDE 标题栏显示的就是它。桌面条目 / 任务栏按 StartupWMClass 找图标不受影响，所以任务栏是对的、
+标题栏不对。这里在窗口出来之后直接把上游 cccodroid.png 写进 _NET_WM_ICON。
+
+用法：cccodroid-seticon <图标.png> <进程pid> [超时秒数]
+只用 Python 标准库 + libX11（ctypes），不依赖 PIL / xdotool。
+"""
+import ctypes
+import ctypes.util
+import os
+import struct
+import sys
+import time
+import zlib
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def load_png_argb(path):
+    data = open(path, "rb").read()
+    if data[:8] != PNG_SIG:
+        raise ValueError("不是 PNG")
+    pos, idat = 8, b""
+    width = height = bitdepth = colortype = interlace = None
+    palette = None
+    while pos + 8 <= len(data):
+        (n,) = struct.unpack(">I", data[pos:pos + 4])
+        typ = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + n]
+        pos += 12 + n
+        if typ == b"IHDR":
+            width, height, bitdepth, colortype, _comp, _filt, interlace = struct.unpack(">IIBBBBB", body)
+        elif typ == b"IDAT":
+            idat += body
+        elif typ == b"PLTE":
+            palette = body
+        elif typ == b"IEND":
+            break
+    if bitdepth != 8 or interlace != 0:
+        raise ValueError("只支持 8 位非隔行 PNG")
+    if colortype not in (0, 2, 3, 6):
+        raise ValueError("不支持的 PNG 颜色类型 %d" % colortype)
+    bpp = {0: 1, 2: 3, 3: 1, 6: 4}[colortype]
+    stride = width * bpp
+    raw = zlib.decompress(idat)
+    out = bytearray()
+    prev = bytearray(stride)
+    i = 0
+    for _y in range(height):
+        f = raw[i]
+        i += 1
+        line = bytearray(raw[i:i + stride])
+        i += stride
+        if f == 1:
+            for x in range(bpp, stride):
+                line[x] = (line[x] + line[x - bpp]) & 255
+        elif f == 2:
+            for x in range(stride):
+                line[x] = (line[x] + prev[x]) & 255
+        elif f == 3:
+            for x in range(stride):
+                a = line[x - bpp] if x >= bpp else 0
+                line[x] = (line[x] + ((a + prev[x]) >> 1)) & 255
+        elif f == 4:
+            for x in range(stride):
+                a = line[x - bpp] if x >= bpp else 0
+                b = prev[x]
+                c = prev[x - bpp] if x >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[x] = (line[x] + pr) & 255
+        elif f != 0:
+            raise ValueError("未知 PNG 过滤器 %d" % f)
+        out += line
+        prev = line
+
+    pixels = []
+    if colortype == 2:
+        for k in range(0, len(out), 3):
+            pixels.append(0xFF000000 | (out[k] << 16) | (out[k + 1] << 8) | out[k + 2])
+    elif colortype == 6:
+        for k in range(0, len(out), 4):
+            pixels.append((out[k + 3] << 24) | (out[k] << 16) | (out[k + 1] << 8) | out[k + 2])
+    elif colortype == 0:
+        for k in range(len(out)):
+            v = out[k]
+            pixels.append(0xFF000000 | (v << 16) | (v << 8) | v)
+    else:  # 调色板
+        for k in range(len(out)):
+            idx = out[k] * 3
+            r, g, b = palette[idx:idx + 3]
+            pixels.append(0xFF000000 | (r << 16) | (g << 8) | b)
+    return width, height, pixels
+
+
+class X11:
+    def __init__(self):
+        path = ctypes.util.find_library("X11") or "libX11.so.6"
+        self.lib = ctypes.CDLL(path)
+        L = self.lib
+        L.XOpenDisplay.restype = ctypes.c_void_p
+        L.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        L.XDefaultRootWindow.restype = ctypes.c_ulong
+        L.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        L.XInternAtom.restype = ctypes.c_ulong
+        L.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        L.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+                                 ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+                                 ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+                                 ctypes.POINTER(ctypes.c_uint)]
+        L.XGetWindowProperty.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+                                         ctypes.c_long, ctypes.c_long, ctypes.c_int,
+                                         ctypes.c_ulong,
+                                         ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int),
+                                         ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+                                         ctypes.POINTER(ctypes.c_void_p)]
+        L.XChangeProperty.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong,
+                                      ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        L.XFree.argtypes = [ctypes.c_void_p]
+        L.XFlush.argtypes = [ctypes.c_void_p]
+        L.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        self.dpy = L.XOpenDisplay(None)
+        if not self.dpy:
+            raise RuntimeError("连不上 DISPLAY")
+        self.root = L.XDefaultRootWindow(self.dpy)
+        self.atom_icon = L.XInternAtom(self.dpy, b"_NET_WM_ICON", 0)
+        self.atom_pid = L.XInternAtom(self.dpy, b"_NET_WM_PID", 0)
+        self.atom_card = L.XInternAtom(self.dpy, b"CARDINAL", 0)
+        self.atom_wmclass = L.XInternAtom(self.dpy, b"WM_CLASS", 0)
+
+    def _get_u32(self, wid, atom):
+        typ = ctypes.c_ulong()
+        fmt = ctypes.c_int()
+        n = ctypes.c_ulong()
+        after = ctypes.c_ulong()
+        data = ctypes.c_void_p()
+        r = self.lib.XGetWindowProperty(self.dpy, wid, atom, 0, 1, 0, self.atom_card,
+                                        ctypes.byref(typ), ctypes.byref(fmt), ctypes.byref(n),
+                                        ctypes.byref(after), ctypes.byref(data))
+        if r != 0 or not data.value or n.value == 0:
+            return None
+        val = ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[0]
+        self.lib.XFree(data)
+        return val
+
+    def windows(self):
+        root = ctypes.c_ulong()
+        parent = ctypes.c_ulong()
+        children = ctypes.POINTER(ctypes.c_ulong)()
+        n = ctypes.c_uint()
+        if not self.lib.XQueryTree(self.dpy, self.root, ctypes.byref(root), ctypes.byref(parent),
+                                   ctypes.byref(children), ctypes.byref(n)):
+            return []
+        out = [children[i] for i in range(n.value)]
+        for w in out:
+            out.extend(self._children(w))
+        if children:
+            self.lib.XFree(children)
+        return out
+
+    def _children(self, wid):
+        root = ctypes.c_ulong()
+        parent = ctypes.c_ulong()
+        children = ctypes.POINTER(ctypes.c_ulong)()
+        n = ctypes.c_uint()
+        if not self.lib.XQueryTree(self.dpy, wid, ctypes.byref(root), ctypes.byref(parent),
+                                   ctypes.byref(children), ctypes.byref(n)):
+            return []
+        out = [children[i] for i in range(n.value)]
+        for w in out:
+            out.extend(self._children(w))
+        if children:
+            self.lib.XFree(children)
+        return out
+
+    def find_pid(self, pid):
+        for w in self.windows():
+            if self._get_u32(w, self.atom_pid) == pid:
+                return w
+        return None
+
+    def set_icon(self, wid, w, h, pixels):
+        arr = (ctypes.c_ulong * (2 + len(pixels)))(w, h, *pixels)
+        self.lib.XChangeProperty(self.dpy, wid, self.atom_icon, self.atom_card, 32, 0,
+                                 ctypes.cast(arr, ctypes.c_void_p), 2 + len(pixels))
+        self.lib.XFlush(self.dpy)
+        # 保持引用到函数结束，避免写属性时被回收
+        del arr
+
+    def close(self):
+        if self.dpy:
+            self.lib.XCloseDisplay(self.dpy)
+            self.dpy = None
+
+
+def main():
+    if len(sys.argv) < 3:
+        sys.stderr.write("用法：cccodroid-seticon <图标.png> <进程pid> [超时秒数]\n")
+        return 2
+    icon, pid = sys.argv[1], int(sys.argv[2])
+    timeout = float(sys.argv[3]) if len(sys.argv) > 3 else 30.0
+    try:
+        w, h, pixels = load_png_argb(icon)
+    except Exception as e:
+        sys.stderr.write("读图标失败：%s\n" % e)
+        return 1
+    x = X11()
+    try:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            wid = x.find_pid(pid)
+            if wid:
+                x.set_icon(wid, w, h, pixels)
+                return 0
+            time.sleep(0.2)
+        sys.stderr.write("超时：没找到 pid=%d 的窗口\n" % pid)
+        return 1
+    finally:
+        x.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

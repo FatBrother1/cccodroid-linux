@@ -124,6 +124,18 @@ fi
 # （游戏模式原本就用 xcb；桌面模式也一起用，实测任务栏显示上游图标。）
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
 export QT_WAYLAND_APP_ID="${QT_WAYLAND_APP_ID:-cccodroid}"
+
+# 标题栏图标：qml6 的 Window 没有 icon 属性，Qt 给窗口挂的是 Qml Runtime 的默认绿色图标。
+# 任务栏按桌面条目找图标，所以只有标题栏不对。窗口出现后由 cccodroid-seticon 直接写 _NET_WM_ICON。
+# 这里在 exec 之前起，传 $$（exec 之后就是 qml 的 pid），它按 _NET_WM_PID 找窗口。
+if [ "${QT_QPA_PLATFORM:-xcb}" = xcb ] && [ -n "${DISPLAY:-}" ] && [ -f "$CURRENT/templates/cccodroid.png" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    UI_PID=$$
+    setsid python3 "$SELF_DIR/cccodroid-seticon" "$CURRENT/templates/cccodroid.png" "$UI_PID" 30 \
+      >/dev/null 2>&1 &
+  fi
+fi
+
 exec -a cccodroid "$QML" "$MAIN_QML" -- \
   "--token-file=$TOKEN_FILE" \
   "--key-file=$KEY_FILE" \
