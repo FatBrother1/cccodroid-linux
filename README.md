@@ -26,6 +26,8 @@ SteamOS / Arch 系桌面上：一个 Qt6 原生窗口、一套 systemd 用户服
 
 ## 下载安装（推荐）
 
+> 第一次用 Linux / Steam Deck？看 **[大白话安装教程](docs/INSTALL.zh-CN.md)**，一步步照着做就行。
+
 到 [Releases](https://github.com/FatBrother1/cccodroid-linux/releases) 下载
 `cccodroid-0.1.0-linux-x86_64.tar.gz`（附 `.sha256` 与 `.sig`）：
 
