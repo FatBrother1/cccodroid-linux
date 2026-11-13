@@ -110,7 +110,7 @@ bash cccodroid-linux/build-bundle.sh \
 ## 与上游同步
 
 - 上游：<https://github.com/greyoak111/cccodroid>（Apache-2.0）
-- 本移植基线：上游 **v0.6.17**（提交写在 `UPSTREAM-BASE`），做 Linux 适配、Android 专属功能移除，
+- 本移植基线：上游 **v0.6.20**（提交写在 `UPSTREAM-BASE`），做 Linux 适配、Android 专属功能移除，
   并加入本地桥与页面操控 MCP。
 - 本仓库是**移植快照，不是 GitHub fork**，不能直接点「Sync fork」。上游发新版后的流程：
   1. `bash scripts/sync-upstream.sh`：拉 `upstream/main`，把基线以来的网关改动写到 `dist-upstream/`；

@@ -17,7 +17,7 @@
 `UPSTREAM-BASE` 记录当前基线。目前是：
 
 ```text
-greyoak111/cccodroid v0.6.17 af79e9b5ffa87239d579d7e5238ec9c0ab845a55
+greyoak111/cccodroid v0.6.20 cb1403590456fec6192f7c33f006d202b7d1be43
 ```
 
 ## 2. 一条命令看上游改了什么
@@ -116,6 +116,6 @@ greyoak111/cccodroid v0.6.20 cb1403590456fec6192f7c33f006d202b7d1be43
 
 ## 5. 当前状态
 
-- 基线：v0.6.17。
+- 基线：v0.6.20（2026-11-13 已同步）。
 - 上游 main：0.6.20。
-- 运行 `scripts/sync-upstream.sh` 可以看到 0.6.17 → 0.6.20 之间 `gateway/` 的全部改动。
+- 再运行 `scripts/sync-upstream.sh` 会从新基线开始对照后续改动。
