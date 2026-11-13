@@ -1,0 +1,36 @@
+cccodroid-linux
+Steam Deck / SteamOS native port of cccodroid（社区移植，非官方项目）
+
+Copyright 2026 cccodroid-linux contributors
+
+This repository contains work derived from the following upstream projects:
+
+  cccodroid
+    https://github.com/greyoak111/cccodroid
+    Copyright 2026 greyoak111 and contributors
+    Licensed under the Apache License, Version 2.0 (see LICENSE and NOTICE.upstream).
+    The gateway source under src/gateway is a modified copy of the upstream source.
+
+  cccodroid-openai-bridge
+    https://github.com/chenshi723/cccodroid-openai-bridge
+    Copyright chenshi723
+    Licensed under the MIT License (see vendor/openai-bridge/LICENSE).
+
+  Claude Code Router (@musistudio/claude-code-router)
+    https://github.com/musistudio/claude-code-router
+    Licensed under the MIT License (see vendor/openai-bridge/LICENSE-CCR.txt).
+
+  Web frontend third-party libraries (xterm.js, pdf.js, KaTeX, highlight.js,
+  eruda, Archify, ccmono, etc.) are the same as upstream cccodroid; their
+  licenses are kept with the corresponding files under src/gateway/web.
+
+NOT INCLUDED:
+
+  Claude Code is proprietary software of Anthropic PBC. Neither this
+  repository nor any release artifact includes Claude Code or its binaries.
+  Users must install it from Anthropic's official channel and comply with
+  Anthropic's terms. This port only invokes a locally installed CLI.
+
+  Shizuku, Termux tooling and other Android-only components referenced by the
+  upstream NOTICE are not part of this port; Android-only features have been
+  removed.

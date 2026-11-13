@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# cccodroid 网关启动包装器。
+# 由 systemd 用户服务或 `cccodroid start` 调用；负责钉死版本目录、Node 运行时与 HOME。
+set -euo pipefail
+
+SELF_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd -P -- "$SELF_DIR/.." && pwd -P)"          # versions/<版本>/
+PREFIX="$(cd -P -- "$ROOT/../.." && pwd -P)"         # 安装前缀
+
+# 网关入口只认位置参数（server.mjs 读 argv[2]），这里把 --port 归一成位置参数。
+PORT="${CCAPP_PORT:-8790}"
+while (($#)); do
+  case "$1" in
+    --port)
+      [ $# -ge 2 ] || { echo "cccodroid-gateway: --port 需要参数" >&2; exit 2; }
+      PORT="$2"
+      shift 2
+      ;;
+    --port=*)
+      PORT="${1#*=}"
+      shift
+      ;;
+    ''|*[!0-9]*)
+      echo "cccodroid-gateway: 无法识别的参数：$1" >&2
+      exit 2
+      ;;
+    *)
+      PORT="$1"
+      shift
+      ;;
+  esac
+done
+if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
+  echo "cccodroid-gateway: 端口不是数字：$PORT" >&2
+  exit 2
+fi
+
+# Node：优先用 bundle 自带的官方 linux-x64 运行时。
+NODE="${CCCODROID_NODE:-}"
+if [ -z "$NODE" ]; then
+  for cand in "$ROOT/runtime/node/bin/node" "$ROOT/runtime/node/node"; do
+    if [ -x "$cand" ]; then
+      NODE="$cand"
+      break
+    fi
+  done
+fi
+if [ -z "$NODE" ]; then
+  echo "cccodroid-gateway: 找不到 Node 运行时（$ROOT/runtime/node）" >&2
+  exit 1
+fi
+
+# 网关入口：兼容仓库布局 src/gateway/server.mjs 与几种常见变体。
+SERVER=""
+for cand in \
+  "$ROOT/src/gateway/server.mjs" \
+  "$ROOT/src/server.mjs" \
+  "$ROOT/gateway/server.mjs" \
+  "$ROOT/server.mjs"; do
+  if [ -f "$cand" ]; then
+    SERVER="$cand"
+    break
+  fi
+done
+if [ -z "$SERVER" ]; then
+  echo "cccodroid-gateway: 找不到网关入口 server.mjs" >&2
+  exit 1
+fi
+
+# ── 运行环境 ──────────────────────────────────────────────────────────
+# home/ 是 cccodroid 的 HOME：配置、.claude 会话、令牌都留在安装前缀里。
+export CCAPP_HOME="${CCAPP_HOME:-$PREFIX/home}"
+export HOME="$CCAPP_HOME"
+export CCAPP_WORKSPACE="${CCAPP_WORKSPACE:-$PREFIX/workspace}"
+export CCAPP_RUNTIME="${CCAPP_RUNTIME:-$ROOT/runtime}"
+export CCAPP_PORT="$PORT"
+# Linux 有正常 DNS，安卓的本地 DNS 桥在这里没有意义。
+export CCAPP_NO_BRIDGE="${CCAPP_NO_BRIDGE:-1}"
+# 关键：安卓版用非空的 CCAPP_PREFIX 识别 Termux 工具链；Linux 版必须为空，
+# 网关才会走系统 PATH / TERMINFO 分支（对应上游的 SYS_LINUX 补丁）。
+unset CCAPP_PREFIX
+# claude 在 Linux 上是普通 glibc 程序：用系统加载器与系统库，不用安卓的 aarch64 加载器。
+export CCAPP_LOADER="${CCAPP_LOADER:-/lib64/ld-linux-x86-64.so.2}"
+export CCAPP_GW_LOADER="${CCAPP_GW_LOADER:-/lib64/ld-linux-x86-64.so.2}"
+export CCAPP_GLIBC_LIB="${CCAPP_GLIBC_LIB:-/usr/lib}"
+export CCAPP_GW_GLIBC_LIB="${CCAPP_GW_GLIBC_LIB:-/usr/lib}"
+export CCAPP_SHELL="${CCAPP_SHELL:-/bin/bash}"
+
+# 把 XDG 目录也收进 home/，避免读写宿主机 ~/.config 里的同一份配置。
+export XDG_CONFIG_HOME="$CCAPP_HOME/.config"
+export XDG_DATA_HOME="$CCAPP_HOME/.local/share"
+export XDG_CACHE_HOME="$CCAPP_HOME/.cache"
+export XDG_STATE_HOME="$CCAPP_HOME/.local/state"
+export PATH="$PREFIX/prefix/bin:$ROOT/runtime/node/bin:$ROOT/runtime:$CCAPP_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export TMPDIR="${TMPDIR:-$CCAPP_HOME/tmp}"
+
+mkdir -p "$CCAPP_HOME" "$CCAPP_WORKSPACE" "$PREFIX/logs" "$PREFIX/run" "$TMPDIR"
+cd "$CCAPP_WORKSPACE"
+
+exec "$NODE" "$SERVER" "$PORT"

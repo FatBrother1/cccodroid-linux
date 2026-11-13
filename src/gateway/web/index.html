@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#1f1e1d">
+<title>cccodroid</title>
+<link rel="icon" type="image/png" href="/icon.png">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+
+<!-- ── 顶栏 ── -->
+<header id="topbar">
+    <button id="btn-menu" class="icon-btn" aria-label="会话与设置" data-i18n-attr="aria-label">
+    <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <div id="title-block">
+    <div id="app-title">cccodroid</div>
+        <div id="sub-title" data-i18n>连接中…</div>
+  </div>
+  <!-- 工具键横向折叠：常态只露「⋯」，点开从它左边依次滑出，再点收回（状态记在 localStorage cc.tbOpen）。
+       冻结脱困不再占按钮：长按标题（见 19-boot.js） -->
+  <!-- 设成「常驻」的工具键挪到这里，不跟着折叠（设置 → 通用 → 顶栏按钮；19-boot.js 的 paintTopbar） -->
+  <div id="tb-pins"></div>
+  <div id="tb-tools"><div class="tb-in">
+    <button id="btn-files" class="icon-btn" aria-label="文件浏览器" title="文件浏览器" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    </button>
+    <button id="btn-term" class="icon-btn" aria-label="终端" title="终端" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><path d="M4 17l6-5-6-5M12 19h8"/></svg>
+    </button>
+    <button id="btn-web" class="icon-btn hidden" aria-label="浏览器" title="浏览器" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+    </button>
+    <button id="btn-palette" class="icon-btn" aria-label="命令面板" title="命令面板" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><path d="M9 6l-5 6 5 6M15 6l5 6-5 6"/></svg>
+    </button>
+    <button id="btn-new" class="icon-btn" aria-label="新会话" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+  </div></div>
+  <button id="btn-more" class="icon-btn" aria-label="展开工具" aria-expanded="false" data-i18n-attr="aria-label">
+    <svg viewBox="0 0 24 24"><path class="more-a" d="M6 12L6 12"/><path class="more-b" d="M12 12L12 12"/><path class="more-c" d="M18 12L18 12"/></svg>
+  </button>
+</header>
+
+<!-- ── 上下文用量条 ── -->
+<div id="ctxbar" class="hidden" role="button" aria-label="额度与余额" data-i18n-attr="aria-label">
+  <div id="ctxfill"></div>
+  <span id="ctxtxt"><span id="ctxctx"></span><span id="ctxq"></span></span>
+</div>
+
+<!-- ── 消息区 ── -->
+<main id="chat"></main>
+
+<!-- ── 输入区 ── -->
+<div id="composer">
+  <!-- 权限确认提示条：有待确认项时常驻（见 app.js renderPermBar） -->
+  <div id="perm-bar" class="hidden" role="status"></div>
+  <!-- 当前会话的 /goal 目标进度与后台任务（见 app.js renderRunStrip） -->
+  <div id="run-strip" class="hidden" role="status"></div>
+  <div id="composer-inner">
+        <button id="btn-plus" class="mini-btn" aria-label="更多" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+        <button id="btn-attach" class="mini-btn hidden" aria-label="附加图片或文件" title="附加图片或文件" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"/></svg>
+    </button>
+    <textarea id="input" rows="1" dir="auto" placeholder="" aria-label="消息输入框" data-i18n-attr="aria-label" autocomplete="off" spellcheck="false"></textarea>
+    <!-- 忙碌且输入框有字时才出现：打断当前 + 立刻发这条 -->
+        <button id="btn-interject" class="hidden" aria-label="插话" title="插话：递进正在跑的这一轮，不打断" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L18.5 10H12l1-8z"/></svg>
+    </button>
+        <button id="btn-send" aria-label="发送" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24" class="ico-send"><path d="M4 12l16-8-6 16-3-6-7-2z"/></svg>
+      <svg viewBox="0 0 24 24" class="ico-stop"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+    </button>
+  </div>
+  <div id="hint-row">
+    <span id="proj-chip" class="chip proj hidden" role="button" tabindex="0"></span>
+    <span id="model-chip">—</span>
+    <span id="perm-chip" role="button" tabindex="0" title="切换权限模式" data-i18n-attr="title"></span>
+    <span id="stat-chip"></span>
+    <span id="draft-chip" class="hidden" role="button" tabindex="0" data-i18n>↩ 恢复刚才清掉的内容</span>
+  </div>
+</div>
+
+<!-- 隐藏的文件选择器（粘贴 / 拖放 / 点回形针都走这条路） -->
+<input type="file" id="file-input" multiple class="hidden">
+
+<!-- ── 命令 / 文件 补全浮层 ── -->
+<div id="popup" class="hidden">
+  <div id="popup-head"></div>
+  <div id="popup-list"></div>
+</div>
+
+<!-- ── 抽屉：会话 / 设置 / 能力 ── -->
+<aside id="drawer" class="hidden">
+  <div class="drawer-panel">
+    <!-- 侧栏（0.3.13 改版）：新对话 / 去哪（常驻项 + 「更多」原地展开，常驻项可自定）/ 最近的对话 / 底部账户行进设置。
+         导航由 app.js renderSideNav 画；设置、能力、扩展、用量、帮助是主区域的整页（#pages），不再挤在侧栏里 -->
+    <div class="side-head">
+      <div class="side-brand"><span id="side-title">cccodroid</span></div>
+      <button id="btn-close-drawer" class="icon-btn" aria-label="收起侧栏" title="收起侧栏" data-i18n-attr="aria-label,title">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg>
+      </button>
+    </div>
+    <button id="side-new" class="side-new"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span data-i18n>新对话</span></button>
+    <!-- 导航和最近对话合成一段一起滚：平时和分开时一样，放不下时导航跟着往上走（#24） -->
+    <div id="side-scroll" class="side-scroll">
+    <nav id="side-nav" class="side-nav"></nav>
+
+    <!-- 最近的对话：单行条目，按置顶 / 今天 / 昨天 / 更早分组；长按（右键）出菜单。搜索、多选、导入、回收站在「对话」整页 -->
+    <div id="side-recent" class="side-recent"></div>
+    </div>
+
+    <button id="side-acct" class="side-acct">
+      <span class="acct-av" id="acct-av">C</span>
+      <span class="acct-txt"><b id="acct-name" data-i18n>设置</b><small id="acct-sub"></small></span>
+      <svg viewBox="0 0 24 24"><path d="M7 15l5-5 5 5"/></svg>
+    </button>
+  </div>
+</aside>
+
+<!-- ── 整页：设置 / 能力 / 扩展 / 用量 / 帮助（主区域，侧栏和右侧窗格都留着；窄屏盖住对话） ── -->
+<div id="pages" class="hidden">
+  <div class="page-body" id="page-body">
+    <!-- 对话（整页）：搜索内容、置顶 / 时间分组、多选导出删除、导入、回收站 -->
+    <section id="tab-sessions" class="tab-pane hidden">
+      <!-- 照设计稿：标题旁一个 ⋯ 收起选择/导入/回收站/刷新/断开（原来那排按钮留着但藏起来，⋯ 菜单点它们） -->
+      <div class="page-head"><h2 id="sess-h" data-i18n>对话</h2><button id="sess-kebab" class="icon-btn" aria-label="更多" title="更多" data-i18n-attr="aria-label,title"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button></div>
+      <label class="searchbox" id="sess-qbox"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="sess-q" type="search" placeholder="搜索对话内容…" data-i18n-attr="placeholder" autocomplete="off" enterkeyhint="search"></label>
+      <div class="seg-scroll" id="sess-flt-wrap"><span class="seg" id="sess-flt"></span></div>
+      <div class="row-actions hidden" id="sess-manage">
+                <button id="btn-refresh-sessions" class="btn ghost sm" data-i18n>刷新列表</button>
+                <button id="btn-close-session" class="btn ghost sm" data-i18n>断开当前</button>
+                <button id="btn-sess-select" class="btn ghost sm" data-i18n>选择</button>
+                <button id="btn-sess-import" class="btn ghost sm" data-i18n>导入</button>
+                <button id="btn-sess-trash" class="btn ghost sm" data-i18n>回收站</button>
+                <input id="sess-import-file" type="file" accept=".zip,application/zip" hidden>
+      </div>
+      <div id="sess-bar" class="row-actions sess-bar hidden"></div>
+      <div id="session-list" class="list"></div>
+      <div class="tiny sess-tip" data-i18n>选择、导入、回收站、刷新、断开在标题旁的 ⋯ 里；单个会话点右边的 ⋯ 或长按。</div>
+    </section>
+
+    <!-- 用量：本应用的使用统计（原来在设置里） -->
+    <!-- 项目 / 定时任务（照稿）：内容全由 app.js 画，列表与详情同一页，返回键先回列表 -->
+    <section id="tab-projects" class="tab-pane hidden"></section>
+    <!-- 脉络：会话亲缘图（地图本体 /lineage/map.js；页里只有一个会自由滚的东西，见规划书 §11.5） -->
+    <section id="tab-lineage" class="tab-pane hidden">
+      <div class="lin-tools"><div class="seg-scroll"><span class="seg" id="lin-bands"></span></div>
+        <button type="button" class="lin-chip lin-how" id="lin-how" data-i18n>怎么看</button>
+        <button type="button" class="lin-chip" id="lin-export" data-i18n>导出</button>
+        <button type="button" class="lin-chip lin-fill hidden" id="lin-fill"></button>
+        <label class="lin-misc"><span data-i18n>显示杂项</span><input type="checkbox" class="sw" id="lin-misc"></label></div>
+      <div class="lin-state hidden" id="lin-state"></div>
+      <div id="lin-map"></div>
+      <div class="lin-pick hidden" id="lin-pick"><span id="lin-pick-n"></span><button type="button" class="btn sm ghost" id="lin-pick-x" data-i18n>取消</button><button type="button" class="btn sm" id="lin-pick-ok"></button></div>
+      <div class="lin-prof hidden" id="lin-prof" role="dialog" aria-labelledby="lp-title"><div class="lp-wrap" id="lp-wrap">
+        <div class="lp-head"><button type="button" class="lp-back" id="lp-back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
+          <div class="lp-ttl"><b id="lp-title"></b><span id="lp-sub"></span></div><button type="button" class="lin-chip" id="lp-open" data-i18n>打开</button></div>
+        <div class="lp-chs"><span class="seg" id="lp-chs"></span></div>
+        <div class="lp-body" id="lp-body"></div></div></div>
+      <div class="lin-tour hidden" id="lin-tour"><div id="lt-map"></div><div class="lt-panel" id="lt-panel" role="dialog"></div></div>
+    </section>
+    <section id="tab-sched" class="tab-pane hidden"></section>
+    <section id="tab-bookmarks" class="tab-pane hidden"></section>
+    <section id="tab-usage" class="tab-pane hidden">
+      <!-- 用量（照设计稿）：一排数字（额度、今天、本月、缓存命中）→ 每天用量柱状图（可切表格）→ 按型号占比 → 最费的对话 → 月报与数据管理。
+           数据：额度来自 /api/login/status；token 来自网关的使用统计（home/ccapp-usage.json，按小时记） -->
+      <!-- 额度与消费：当前接口（账户额度 / 厂商余额与消费）+ 其他配过的接口 + 快用完时的提醒。顶栏细条的速览卡「查看用量」跳到这里 -->
+      <div class="chart-card" id="us-acct">
+        <div class="cc-h"><b data-i18n>额度与消费</b><span class="muted" id="us-acct-name"></span><span class="grow"></span><button class="btn sm ghost" id="us-acct-ref" data-i18n>刷新</button></div>
+        <div id="us-acct-cur"></div>
+        <div id="us-acct-others"></div>
+        <div class="qb-warn">
+          <label><input type="checkbox" class="sw" id="qb-warn-quota"><span data-i18n>额度用到 80% 和 95% 时提醒</span></label>
+          <label><span data-i18n>余额低于这个数时提醒</span><span class="grow"></span><span id="qb-warn-cur"></span><input type="number" id="qb-warn-bal" min="0" step="any" inputmode="decimal" placeholder="—"></label>
+        </div>
+      </div>
+      <div class="tiles us-kpis" id="us-kpis"></div>
+      <div class="chart-card">
+        <div class="cc-h"><b data-i18n>每天用量</b><span class="muted" data-i18n>最近 14 天 · tokens</span><span class="grow"></span><span class="seg" id="us-view"><button class="on" data-v="chart" data-i18n>图</button><button data-v="table" data-i18n>表格</button></span></div>
+        <div class="chart-wrap" id="us-daily"></div>
+      </div>
+      <div class="chart-card" id="us-models-card">
+        <div class="cc-h"><b data-i18n>按型号</b><span class="muted" data-i18n>本月 tokens 占比</span></div>
+        <div class="share" id="us-share-bar"></div>
+        <div class="share-leg" id="us-share-leg"></div>
+      </div>
+      <div class="chart-card"><div class="cc-h"><b data-i18n>最费的对话</b><span class="muted" data-i18n>本月</span></div>
+          <div class="panel flat" id="us-top"></div></div>
+      <div class="row-actions us-acts"><button class="btn ghost" id="us-report-btn" data-i18n>生成月报图</button><button class="btn ghost" id="us-csv" data-i18n>导出 CSV</button></div>
+      <!-- 月报：近 12 个月、月历热力图（canvas，可保存 / 分享）；统计数据的开关与清理也在这里 -->
+      <div class="chart-card hidden" id="us-field">
+        <div class="cc-h"><b data-i18n>月报</b></div>
+        <div class="us-year" id="us-year"></div>
+          <div class="us-mhead">
+            <button class="icon-btn" id="us-prev" aria-label="上个月" data-i18n-attr="aria-label">‹</button>
+            <span id="us-mlabel"></span>
+            <button class="icon-btn" id="us-next" aria-label="下个月" data-i18n-attr="aria-label">›</button>
+          </div>
+          <canvas id="us-card" class="us-card"></canvas>
+          <div id="us-actions">
+            <div class="row-actions">
+              <button class="btn sm" data-act="save" data-i18n>保存图片</button>
+              <button class="btn sm ghost" data-act="share" id="us-share" data-i18n>分享</button>
+            </div>
+            <details class="ext-more"><summary data-i18n>管理统计数据</summary>
+              <label class="tiny" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+                <input type="checkbox" class="sw" id="us-off">
+                <span data-i18n>记录使用统计</span>
+              </label>
+              <div class="row-actions">
+                <button class="btn sm ghost" data-act="import" data-i18n>从历史会话重新补算</button>
+                <button class="btn sm ghost danger" data-act="clear-month" data-i18n>清除这个月</button>
+                <button class="btn sm ghost danger" data-act="clear-all" data-i18n>清空全部</button>
+              </div>
+            </details>
+          </div>
+          <div class="tiny" id="us-note"></div>
+          <div class="prov-state" id="us-result"></div>
+      </div>
+      <!-- 旧的额度块：数字已挪到上面那排，这里只留更新时间说明（JS 仍写它） -->
+      <div class="hidden" id="quota-field"><div id="quota-tiles"></div><div class="tiny" id="quota-note"></div></div>
+      <div class="hidden" id="us-tiles"></div>
+    </section>
+
+    <!-- 能力：这一轮 Claude 能用的全部东西（取自 init 报告）。顶上计数格点了跳到那一节；搜索框同时筛所有节 -->
+    <section id="tab-caps" class="tab-pane hidden">
+      <!-- 能力（照设计稿）：一句说明 → 计数格 → 搜索 → 各节（节头在外，列表是一张底板） -->
+      <div class="muted caps-lead" data-i18n>这一轮 Claude 能用的全部东西（取自启动时的 init 报告）。点斜杠命令插进输入框；工具的「允许 / 询问 / 拒绝」跟着权限模式和规则走。</div>
+      <div class="tiles" id="cap-tiles"></div>
+      <label class="searchbox"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="caps-q" type="search" placeholder="搜命令、工具、技能…" data-i18n-attr="placeholder" autocomplete="off"></label>
+      <div class="ext-sec-plain" data-sec="cmd"><div class="sec-h"><span class="icobox"><svg class="ei" viewBox="0 0 24 24"><path d="M15 4 9 20"/></svg></span><div class="grow"><h3 data-i18n>斜杠命令</h3></div></div>
+        <div id="caps-cmds" class="cmd-grid"></div></div>
+      <div class="ext-sec-plain" data-sec="tool"><div class="sec-h"><span class="icobox"><svg class="ei" viewBox="0 0 24 24"><path d="M4 20l7-7M14 4l6 6-3 3-6-6zM10 8l6 6"/></svg></span><div class="grow"><h3 data-i18n>工具</h3><p id="caps-permline"></p></div><button class="btn sm ghost" id="caps-rules" data-i18n>编辑规则</button></div>
+        <div id="caps-tools" class="panel"></div></div>
+      <div class="ext-sec-plain" data-sec="skill"><div class="sec-h"><span class="icobox"><svg class="ei" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg></span><div class="grow"><h3 data-i18n>技能</h3></div></div>
+        <div id="caps-skills" class="panel"></div></div>
+      <div class="ext-sec-plain" data-sec="agent"><div class="sec-h"><span class="icobox"><svg class="ei" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 8 11 16M16.5 8 13 16M8.5 6h7"/></svg></span><div class="grow"><h3 data-i18n>子代理</h3></div></div>
+        <div id="caps-agents" class="panel"></div></div>
+      <div class="ext-sec-plain" data-sec="mcp"><div class="sec-h"><span class="icobox"><svg class="ei" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></svg></span><div class="grow"><h3 data-i18n>MCP</h3><p data-i18n>装卸在 扩展 → MCP</p></div><button id="btn-refresh-mcp" class="btn ghost sm" data-i18n>查询 MCP</button></div>
+        <div id="caps-mcp" class="panel"></div></div>
+      <div class="ext-sec-plain" data-sec="plugin"><div class="sec-h"><span class="icobox"><svg class="ei" viewBox="0 0 24 24"><path d="M10 3h4v3a2 2 0 1 0 4 0V3h3v7h-3a2 2 0 1 0 0 4h3v7h-7v-3a2 2 0 1 0-4 0v3H3v-7h3a2 2 0 1 0 0-4H3V3z"/></svg></span><div class="grow"><h3 data-i18n>插件</h3></div></div>
+        <div id="caps-plugins" class="panel"></div></div>
+    </section>
+
+    <!-- 帮助：第一次点开才去取 help/<语言>.md 渲染（懒加载），目录点了跳到对应小节 -->
+    <section id="tab-help" class="tab-pane hidden">
+      <label class="searchbox"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="help-q" type="search" placeholder="搜帮助…" data-i18n-attr="placeholder" autocomplete="off"></label>
+      <div class="help-layout">
+        <nav id="help-toc" class="help-toc"></nav>
+        <div id="help-body" class="help-body"></div>
+      </div>
+    </section>
+
+
+    <!-- 扩展：插件 / 技能 / MCP 的安装与卸载（都转给 claude 自己的命令行） -->
+    <section id="tab-ext" class="tab-pane hidden">
+      <nav class="subnav" id="ext-subnav"></nav>
+      <div class="field ext-sec-plain hidden" id="gh-field" data-sec="gh"><div class="sec-title"><span class="sec-ico"><svg viewBox="0 0 24 24"><path d="M9 19c-4 1.4-4-2-6-2.5M15 22v-3.5a3 3 0 0 0-.9-2.4c3-.3 6-1.5 6-6.6a5.2 5.2 0 0 0-1.4-3.6 4.8 4.8 0 0 0-.1-3.6s-1.1-.3-3.6 1.4a12.4 12.4 0 0 0-6.5 0C6 1.9 4.9 2.2 4.9 2.2a4.8 4.8 0 0 0-.1 3.6A5.2 5.2 0 0 0 3.4 9.4c0 5.1 3 6.3 6 6.6a3 3 0 0 0-.9 2.4V22"/></svg></span><span>GitHub</span></div>
+        <div id="gh-field-box" class="list"></div>
+      </div>
+      <div class="tiny" data-i18n>改动在下一条消息生效。插件和 MCP 由 claude 自己的命令装卸，这里只是替你敲命令。</div>
+      <details class="field ext-sec" data-sec="plugin" open><summary><span class="sec-ico"><svg viewBox="0 0 24 24"><path d="M10 3h4v3a2 2 0 1 0 4 0V3h3v7h-3a2 2 0 1 0 0 4h3v7h-7v-3a2 2 0 1 0-4 0v3H3v-7h3a2 2 0 1 0 0-4H3V3z"/></svg></span><span data-i18n>插件</span> <span id="ext-p-count" class="pill"></span></summary>
+        <div class="ext-idx" id="plugin-idx"></div>
+        <div id="ext-plugins" class="list"></div>
+        <label class="searchbox sb-go"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="ext-p-q" type="search" enterkeyhint="search" placeholder="搜索插件（官方目录与已添加的市场）" data-i18n-attr="placeholder" autocomplete="off"><button id="ext-p-search" type="button" class="sb-btn" data-i18n>搜索</button></label>
+        <div id="ext-catalog" class="list"></div>
+        <details class="ext-more"><summary data-i18n>插件市场</summary>
+          <div id="ext-markets" class="list"></div>
+          <div class="row-actions">
+            <input id="ext-m-src" placeholder="GitHub 仓库（owner/repo）或网址" data-i18n-attr="placeholder" autocomplete="off">
+            <button id="ext-m-add" class="btn sm ghost" data-i18n>添加市场</button>
+          </div>
+        </details>
+      </details>
+      <!-- 常用指令（0.4.20）：就是 Claude Code 的自定义命令文件（commands/*.md），逻辑在 app/08-extensions.js 的 UC 一节、网关 gw/commands.mjs -->
+      <details class="field ext-sec" id="ext-cmd-sec" data-sec="ucmd" data-short="指令" open><summary><span class="sec-ico"><svg viewBox="0 0 24 24"><path d="M15 4 9 20"/></svg></span><span data-i18n>常用指令</span> <span id="ext-c-count" class="pill"></span></summary>
+        <div class="tiny" data-i18n>常发的长提示存成一条指令，输入框里打 / 就能选。/指令名 后面跟的话会填进正文里的 $ARGUMENTS。存的是 Claude Code 官方的命令文件，终端里的 claude 也能用。</div>
+        <div class="ext-idx" id="cmd-scope"></div>
+        <div id="ext-cmds" class="list"></div>
+        <div class="row-actions"><button id="ext-c-new" class="btn sm ghost" data-i18n>新建指令</button></div>
+        <div id="cmd-form" class="ext-form uc-form hidden"></div>
+      </details>
+      <details class="field ext-sec" data-sec="skill" open><summary><span class="sec-ico"><svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg></span><span data-i18n>技能</span> <span id="ext-s-count" class="pill"></span></summary>
+        <div class="ext-idx" id="skill-idx"></div>
+        <div id="ext-skills" class="list"></div>
+        <div class="row-actions">
+          <button id="ext-s-import" class="btn sm ghost" data-i18n>从 zip 安装技能</button>
+          <input id="ext-s-file" type="file" multiple hidden>
+        </div>
+        <details class="ext-more" id="ext-s-catbox"><summary data-i18n>官方技能（anthropics/skills）</summary>
+          <div class="tiny" data-i18n>Anthropic 官方的技能仓库，装进 ~/.claude/skills；删除在上面的列表里。各个技能的许可证不同，装前可以点链接看一眼。</div>
+          <div id="ext-s-cat" class="list"></div>
+        </details>
+      </details>
+      <details class="field ext-sec" data-sec="mcp" data-short="MCP" open><summary><span class="sec-ico"><svg viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></svg></span><span data-i18n>MCP 服务器</span> <span id="ext-m-count" class="pill"></span></summary>
+        <div class="ext-idx" id="mcp-idx"></div>
+        <div id="ext-mcp" class="list"><div class="tiny" data-i18n>查询中…（要逐个试连，稍等几秒）</div></div>
+        <details class="ext-more" id="ext-mcp-catbox"><summary data-i18n>官方 MCP 注册表</summary>
+          <div class="tiny" data-i18n>registry.modelcontextprotocol.io：任何人都能发布，没有人审核。本机能装远程服务和 npm 包；npm 包会在本机运行，装之前看清命令和来源。</div>
+          <label class="searchbox sb-go"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="ext-mcp-q" type="search" enterkeyhint="search" placeholder="搜索 MCP 服务器（名字或用途）" data-i18n-attr="placeholder" autocomplete="off"><button id="ext-mcp-search" type="button" class="sb-btn" data-i18n>搜索</button></label>
+          <div id="ext-mcp-cat" class="list"></div>
+        </details>
+        <details class="ext-more"><summary data-i18n>添加 MCP 服务器</summary>
+          <div class="ext-form">
+            <input id="ext-mcp-name" placeholder="名字（字母、数字、- _ .）" data-i18n-attr="placeholder" autocomplete="off">
+            <select id="ext-mcp-tr"><option value="stdio">stdio</option><option value="http">http</option><option value="sse">sse</option></select>
+            <input id="ext-mcp-target" placeholder="命令（stdio）或网址（http / sse）" data-i18n-attr="placeholder" autocomplete="off">
+            <input id="ext-mcp-env" placeholder="环境变量 / 请求头，可选，用逗号分隔（KEY=值 或 Header: 值）" data-i18n-attr="placeholder" autocomplete="off">
+            <button id="ext-mcp-add" class="btn sm" data-i18n>添加</button>
+          </div>
+        </details>
+      </details>
+      <details class="field ext-sec" id="ext-hook-sec" data-sec="hook" data-short="Hooks" open><summary><span class="sec-ico"><svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L18.5 10H12z"/></svg></span><span data-i18n>Hooks（自动规则）</span> <span id="ext-h-count" class="pill"></span></summary>
+        <div class="tiny" data-i18n>hooks 就是「到了某个时刻，自动跑一条命令」：Claude 用工具之前或之后、你发消息时、它答完一轮时……命令可以拦下 Claude 的动作、给它补充说明，也可以顺手做些杂事（存档、记录、格式化）。</div>
+        <div class="ext-idx" id="hook-scope"></div>
+        <div id="hook-bar" class="hk-bar"></div>
+        <div id="ext-hooks" class="list"></div>
+        <details class="ext-more" id="hook-recipes-box"><summary data-i18n>常用规则（点「添加」，改改参数就能用）</summary>
+          <div id="hook-recipes" class="list"></div>
+        </details>
+        <details class="ext-more" id="hook-form-box"><summary data-i18n>自己写一条</summary>
+          <div id="hook-form" class="ext-form"></div>
+        </details>
+        <details class="ext-more"><summary data-i18n>hooks 是怎么工作的</summary>
+          <div class="tiny hk-help" data-i18n-html>命令在项目目录里用 bash 运行，Claude 会把这一刻的情况（哪个工具、什么参数、你说了什么……）以 JSON 从标准输入传给它。<br>退出码决定结果：<b>0</b> 正常放行；<b>2</b> 拦下这一步（「用工具之前」「你发出消息时」），stderr 里写的原因会转告 Claude；其他退出码算出错，不拦，Claude 照常继续。<br>「你发出消息时」和「会话开始时」的命令打印出来的内容，会作为补充说明交给 Claude。<br>改动在下一条消息生效。规则是普通的 shell 命令，能做的事和你在终端里一样多——别加来路不明的命令。</div>
+        </details>
+      </details>
+    </section>
+  </div>
+</div>
+
+<!-- ── 设置：宽屏是居中的弹窗（左分类、右内容），窄屏整页推入（先分类列表，点进去看一类）── -->
+<div id="set-ov" class="hidden">
+  <div class="set-sheet" role="dialog" aria-modal="true" aria-labelledby="set-title">
+    <div class="set-shead">
+      <button id="set-back" class="icon-btn" aria-label="返回" data-i18n-attr="aria-label"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <h3 id="set-title" data-i18n>设置</h3>
+      <button id="set-x" class="icon-btn" aria-label="关闭" data-i18n-attr="aria-label"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <section id="tab-settings" class="set-pane">
+      <!-- 设置（0.3.13 改版）：按类分开，每项一行 —— 左边名称和一句说明，右边控件；开关一律拨动开关。
+           复杂的块（接口卡、通知、更新）是「标题行 + 内容」。
+           宽屏左栏分类、右边一类；窄屏先列分类，点进去再看（逻辑在 app.js paintSetCats）。所有 id 与旧版一致 -->
+      <div class="set-wrap">
+        <nav class="set-cats" id="set-cats">
+          <button data-cat="general"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 4v5"/></svg><span data-i18n>通用</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button data-cat="provider"><svg viewBox="0 0 24 24"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg><span data-i18n>接口与型号</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button data-cat="claude"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.6L20 9.3l-4.4 3.9 1.3 5.8L12 16l-4.9 3 1.3-5.8L4 9.3l5.8-.7z"/></svg><span data-i18n>Claude 行为</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button data-cat="storage"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg><span data-i18n>存储</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button data-cat="device"><svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg><span data-i18n>通知</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button data-cat="update"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span data-i18n>更新</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button data-cat="usage"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span data-i18n>用量</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button data-cat="trouble"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-.5-.5-2.5z"/></svg><span data-i18n>排障</span><svg viewBox="0 0 24 24" class="chev"><path d="M9 6l6 6-6 6"/></svg></button>
+        </nav>
+        <div class="set-main">
+  
+        <!-- ── 通用 ── -->
+        <div class="set-cat hidden" data-cat="general">
+          <h3 class="set-h" data-i18n>通用</h3>
+          <!-- 语言：标签跟界面语言走；选项里各语言用自己的写法（谁都认得出自己的语言）。逻辑在 i18n.js -->
+          <div class="srow">
+            <div class="sl"><b data-i18n>语言</b></div>
+            <div class="sc">
+              <!-- 选项由 i18n.js 按 langs.js 生成；这三项只是 i18n.js 没加载时的兜底 -->
+              <select id="set-lang">
+                <option value="auto" data-i18n>跟随系统</option>
+                <option value="zh">简体中文</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+          </div>
+          <!-- 头像与昵称：只存在本机（localStorage cc.profile），显示在侧栏左下角，导出使用月报时也印上 -->
+          <div class="srow">
+            <div class="sl"><b data-i18n>头像与昵称</b><p data-i18n>显示在侧栏左下角；导出使用月报时也会印上</p></div>
+            <div class="sc prof-row">
+              <button type="button" id="prof-av" class="acct-av prof-av" data-i18n-attr="title" title="换头像"></button>
+              <input id="prof-name" maxlength="24" autocomplete="off" placeholder="昵称" data-i18n-attr="placeholder">
+              <button type="button" id="prof-reset" class="btn sm ghost" data-i18n>还原</button>
+              <input type="file" id="prof-file" accept="image/*" class="hidden">
+            </div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>外观</b><p data-i18n>原生、「求索」「逐月」「构成」或「拾色」配色</p></div>
+            <div class="sc"><span class="seg" id="seg-skin"><button data-sk="native" data-i18n>原生</button><button data-sk="qiusuo" data-i18n>求索</button><button data-sk="zhuyue" data-i18n>逐月</button><button data-sk="goucheng" data-i18n>构成</button><button data-sk="shise" data-i18n>拾色</button></span></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>深浅</b></div>
+            <div class="sc"><span class="seg" id="seg-mode"><button data-md="auto" data-i18n>跟随系统</button><button data-md="light" data-i18n>浅</button><button data-md="dark" data-i18n>深</button></span>
+              <!-- 真正的设置仍是这个下拉框（theme.js 读写它）；上面两组分段只是它的两半 -->
+              <select id="set-theme" class="hidden">
+                <option value="auto" data-i18n>原生 · 跟随系统</option>
+                <option value="light" data-i18n>原生 · 浅色</option>
+                <option value="dark" data-i18n>原生 · 深色</option>
+                <option value="qs-auto" data-i18n>求索 · 跟随系统</option>
+                <option value="qs-light" data-i18n>求索 · 浅色</option>
+                <option value="qs-dark" data-i18n>求索 · 深色</option>
+                <option value="zy-auto" data-i18n>逐月 · 跟随系统</option>
+                <option value="zy-light" data-i18n>逐月 · 浅色</option>
+                <option value="zy-dark" data-i18n>逐月 · 深色</option>
+                <option value="gc-auto" data-i18n>构成 · 跟随系统</option>
+                <option value="gc-light" data-i18n>构成 · 浅色</option>
+                <option value="gc-dark" data-i18n>构成 · 深色</option>
+                <option value="ss-auto" data-i18n>拾色 · 跟随系统</option>
+                <option value="ss-light" data-i18n>拾色 · 浅色</option>
+                <option value="ss-dark" data-i18n>拾色 · 深色</option>
+              </select>
+            </div>
+          </div>
+          <!-- 构成浅色的纸色（0.6.2）：只在构成 · 浅色时显示，算色在 theme.js gcPaint -->
+          <div class="srow gp-row" id="gp-row">
+            <div class="sl"><b data-i18n>纸色</b><p data-i18n>构成浅色的底色：往左偏白，往右偏黄</p></div>
+            <div class="sc gp-sc"><span class="tiny" data-i18n>白</span><div class="ac-track"><input type="range" id="gp-range" min="0" max="100" step="1"></div><span class="tiny" data-i18n>黄</span><button type="button" class="btn sm ghost" id="gp-reset" data-i18n>还原</button></div>
+          </div>
+          <!-- 强调色（0.4.20）：色块由 app/09-settings.js 画，算色在 theme.js（按底色自动调深浅） -->
+          <div class="srow ac-row">
+            <div class="sl"><b data-i18n>强调色</b><p data-i18n>按钮、链接、选中项的颜色。会按当前外观的底色自动调深浅，保证看得清</p></div>
+            <div class="sc"><div class="ac-sw" id="ac-sw"></div></div>
+          </div>
+          <!-- 消息下面的按钮（0.4.20）：只藏不排序，存 ccapp-ui.json 的 msgActs -->
+          <div class="srow ma-row">
+            <div class="sl"><b data-i18n>消息下面的按钮</b><p data-i18n>点一下切换显示或隐藏，用不上的可以藏起来</p>
+              <div id="ma-list" class="ma-list"></div></div>
+            <div class="sc"><button type="button" id="ma-reset" class="btn sm ghost" data-i18n>恢复默认</button></div>
+          </div>
+          <!-- 顶栏按钮（0.4.20）：常驻 / 收起 / 隐藏 + 拖动排序，存 ccapp-ui.json 的 topbar（app/09-settings.js 的 TB 一节） -->
+          <div class="srow tb-row">
+            <div class="sl"><b data-i18n>顶栏按钮</b><p data-i18n>每个按钮选「常驻」（一直露在顶栏）、「收进 ⋯」（点 ⋯ 才出来）或「隐藏」；按住左边的把手上下拖，换先后顺序</p>
+              <div id="tb-list" class="tb-list"></div></div>
+            <div class="sc"><button type="button" id="tb-reset" class="btn sm ghost" data-i18n>恢复默认</button></div>
+          </div>
+          <!-- 字体与正文字号（theme.js 读写，结果在 html 的 data-uifont / data-readfont / data-fs 上）；
+               「自选…」从导入的字体里挑（app/09-settings.js 的字体一节），选中后按钮上显示字体名 -->
+          <div class="srow">
+            <div class="sl"><b data-i18n>界面字体</b><p data-i18n>默认用应用自带的 Inter 与思源黑体，不受系统字体主题影响</p></div>
+            <div class="sc"><span class="seg" id="seg-uifont"><button data-uf="cc" data-i18n>默认</button><button data-uf="system" data-i18n>跟随系统</button><button data-uf="pick" class="uf-pick"><span data-i18n>自选…</span><i class="uf-cur"></i></button></span></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>回复字体</b><p data-i18n>Claude 回复正文的字体</p></div>
+            <div class="sc"><span class="seg" id="seg-readfont"><button data-rf="serif" data-i18n>衬线</button><button data-rf="sans" data-i18n>无衬线</button><button data-rf="pick" class="uf-pick"><span data-i18n>自选…</span><i class="uf-cur"></i></button></span></div>
+          </div>
+          <div class="srow uf-row">
+            <div class="sl"><b data-i18n>导入的字体</b><p data-i18n>支持 ttf、otf、woff、woff2，单个不超过 40 MB，最多 10 个。导入后在上面点「自选…」选用；缺的字会用自带字体补上</p>
+              <div id="uf-list" class="uf-list"></div></div>
+            <div class="sc"><button type="button" id="uf-add" class="btn sm ghost" data-i18n>导入字体…</button>
+              <input type="file" id="uf-file" accept=".ttf,.otf,.woff,.woff2" class="hidden"></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>正文字号</b><p data-i18n>对话和输入框里的字</p></div>
+            <div class="sc"><span class="seg" id="seg-fs"><button data-fs="s" data-i18n>小</button><button data-fs="m" data-i18n>中</button><button data-fs="l" data-i18n>大</button><button data-fs="xl" data-i18n>特大</button></span></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>界面动效</b><p data-i18n>侧栏、菜单、整页的进出和完成提示；跟随系统时，系统开了「减少动态效果」就不放</p></div>
+            <div class="sc"><span class="seg" id="seg-motion"><button data-mo="auto" data-i18n>跟随系统</button><button data-mo="on" data-i18n>开</button><button data-mo="off" data-i18n>关</button></span></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>回车键</b><p data-i18n>没有 Shift 键时，想多行输入就选换行</p></div>
+            <div class="sc">
+              <select id="set-enter">
+                <option value="send" data-i18n>发送（Shift + 回车换行）</option>
+                <option value="newline" data-i18n>换行（Ctrl + 回车或点发送键发出）</option>
+              </select>
+            </div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>侧栏常驻项</b><p data-i18n>其余收在「更多」里</p></div>
+            <div class="sc"><button class="btn sm ghost" id="set-navpins" data-i18n>编辑</button></div>
+          </div>
+        </div>
+  
+        <!-- ── 接口与型号 ── -->
+        <div class="set-cat hidden" data-cat="provider">
+          <h3 class="set-h" data-i18n>接口与型号</h3>
+          <div class="srow">
+            <div class="sl"><b><span data-i18n>接口</span> <span class="pill" id="provider-count"></span></b><p id="provider-info" data-i18n>正在读取…</p></div>
+            <div class="sc"><select id="set-provider"></select><button class="btn sm ghost" id="prov-more"></button></div>
+          </div>
+          <!-- 选中那一家的配置卡：账户登录 / 密钥 / 自定义接口，由 app.js 按类型渲染 -->
+          <div class="sblock prov-card" id="prov-card"></div>
+          <div class="srow" id="prov-show-row">
+            <div class="sl"><b data-i18n>在模型选单里显示</b><p id="prov-show-info" class="clamp" data-i18n>关掉后输入栏的模型选单里不列这一家，配置和密钥照留，随时能再打开。没登录的官方账户本来就不列。</p></div>
+            <div class="sc"><input type="checkbox" class="sw" id="set-provshow"></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b><span data-i18n>模型</span> <span class="pill" id="model-count"></span></b><p id="model-info" class="clamp" data-i18n-html>从厂商的 <code>/models</code> 实时拉取；也可在输入框直接打 <code>/model &lt;id&gt;</code>。</p></div>
+            <div class="sc"><select id="set-model"></select></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>思考强度（--effort）</b><p id="effort-info" class="clamp" data-i18n-html>档位随模型变化。也可在输入框打 <code>/effort &lt;level&gt;</code>。</p></div>
+            <div class="sc"><select id="set-effort"></select></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>自动起名</b><p data-i18n>新对话第一轮答完，在后台起个标题</p><p class="clamp" data-i18n>用你的提问和第一轮回答起标题，几秒后自己换上，会多花一点 token；可以指定一个便宜快速的型号专门起名。关掉后，等你发第二条消息时由对话里的模型起名。</p></div>
+            <div class="sc"><select id="set-titlemodel"></select></div>
+          </div>
+          <!-- 压缩线：拖动设 autoCompactWindow（和「Claude 行为」里的数字框是同一项） -->
+          <div class="sblock ac-slide" id="ac-slide">
+            <div class="ac-head"><b data-i18n>上下文压缩线</b><span id="ac-val"></span><button class="btn sm ghost" id="ac-auto" data-i18n>交给 claude</button></div>
+            <div class="ac-track"><input type="range" id="ac-range" min="0" max="100" step="1"></div>
+            <div class="ac-scale"><span id="ac-min"></span><span id="ac-max"></span></div>
+            <p class="tiny" data-i18n>用量逼近这条线时自动摘要历史。线放低更省、记得更少；放高记得多，但每轮更贵、更慢。</p>
+          </div>
+        </div>
+  
+        <!-- ── Claude 行为 ── -->
+        <div class="set-cat hidden" data-cat="claude">
+          <h3 class="set-h" data-i18n>Claude 行为</h3>
+          <div class="srow stack">
+            <div class="sl"><b data-i18n>权限模式</b><p data-i18n>新对话默认；输入栏下也能临时切</p><p class="clamp" data-i18n>默认逐项确认，和官方一致：改文件、跑命令前会在对话里问你。全部放行意味着 Claude 不问你就能删文件、跑任意命令。也可以点输入框下方的权限标签随时切换。</p></div>
+            <div class="sc">
+              <select id="set-perm">
+                <option value="default" data-i18n>default · 逐项确认（默认）</option>
+                <option value="acceptEdits" data-i18n>acceptEdits · 自动接受编辑</option>
+                <option value="plan" data-i18n>plan · 只出计划不执行</option>
+                <option value="auto" data-i18n>auto · 自动判断</option>
+                <option value="dontAsk" data-i18n>dontAsk · 不询问（要确认的一律拒绝）</option>
+                <option value="bypassPermissions" data-i18n>bypassPermissions · 全部放行</option>
+              </select>
+            </div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>敏感操作再确认</b><p data-i18n>碰到密钥时，全部放行也会问你</p><p class="clamp" data-i18n>Claude 要读密钥和登录凭据（.env、SSH 钥匙、接口密钥、网关令牌等）时，单独弹一张确认卡片，全部放行也不例外；同一轮里同一类点过允许就不再问。它防的是 Claude 读到的网页或文件里藏了指令、把它带偏。只是兜底：故意绕开的写法认不出来。</p></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>外链图片点一下才加载</b><p data-i18n>md 文件里引用的网络图片先显示成按钮，点了才去请求，对方服务器看不到你何时在读</p></div>
+            <div class="sc"><input type="checkbox" class="sw" id="set-extimg"></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>输出风格</b></div>
+            <div class="sc"><select id="set-style"><option value="" data-i18n>（默认）</option></select></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>自动压缩窗口（token）</b><p data-i18n>上下文到多少 token 时压缩</p><p id="ac-info" class="clamp" data-i18n-html>用量逼近这个值时自动摘要历史。留空即不干预；也可在输入框打 <code>/autocompact &lt;n&gt;k</code>。</p></div>
+            <div class="sc"><input id="set-autocompact" type="number" inputmode="numeric" min="100000" step="1000" placeholder="留空 = 交给 claude 按窗口决定" data-i18n-attr="placeholder"></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>空闲压缩</b><p data-i18n>长会话闲置快一小时时先压缩</p><p class="clamp" data-i18n>只对 Claude 账户和 Anthropic API Key 生效。上下文超过 20 万 token 的会话闲置约 54 分钟、1 小时提示缓存快过期时，先压缩一次；回来接着聊就不用把整段历史按全价重新处理，订阅账户少占额度，API Key 少花钱。电脑上的 Claude Code 也是这么做的。</p></div>
+            <div class="sc"><input type="checkbox" class="sw" id="set-idlecompact"></div>
+          </div>
+          <div class="sblock" id="dir-field">
+            <div class="srow head">
+              <div class="sl"><b data-i18n>附加目录</b><p data-i18n>--add-dir，让 claude 能读写工作区之外的目录</p><p class="clamp" data-i18n>让 claude 能读写工作区之外的目录。这些目录同时会成为文件浏览器的快捷入口。</p></div>
+              <div class="sc"><button class="btn sm ghost" id="dir-toggle"></button></div>
+            </div>
+            <div id="dir-list" class="list compact dir-more hidden"></div>
+            <div class="sinline dir-more hidden">
+              <input id="inp-dir" placeholder="/home/deck/某个目录" data-i18n-attr="placeholder">
+              <button id="btn-add-dir" class="btn sm" data-i18n>添加</button>
+            </div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>安全模式</b><p data-i18n>不加载 CLAUDE.md、技能、插件、钩子、MCP</p><p class="clamp" data-i18n>安全模式：用 claude 自带的 --safe-mode 起，CLAUDE.md、技能、插件、钩子、MCP、自定义命令与输出风格一概不加载。登录、Key、会话、模型照旧，不改动任何文件，关掉即恢复</p></div>
+            <div class="sc"><input type="checkbox" class="sw" id="safe-mode"></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>最多同时跑几个会话</b><p data-i18n>每多跑一个多占几百 MB 内存</p><p class="clamp" data-i18n>不同会话可以同时干活，同一个会话里还是一条接一条。每多跑一个要多占几百 MB 内存，内存紧时调小；1 = 一次只跑一轮。</p></div>
+            <div class="sc"><input id="set-parallel" class="narrow" type="number" inputmode="numeric" min="1" step="1"></div>
+          </div>
+        </div>
+  
+        <!-- ── 存储（D10）：占了多少、哪些能清。逻辑在 app/10b-storage.js，网关 gw/storage.mjs ── -->
+        <div class="set-cat hidden" data-cat="storage">
+          <h3 class="set-h" data-i18n>存储</h3>
+          <div class="sblock" id="st-top">
+            <div class="srow head">
+              <div class="sl"><b data-i18n>占用空间</b><p id="st-sum"></p><p class="tiny" id="st-when"></p></div>
+              <div class="sc"><button class="btn sm" id="st-scan" data-i18n>扫描</button></div>
+            </div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>会话保留</b><p id="st-keep"></p><p class="clamp" data-i18n>Claude Code 默认把 30 天没动过的会话连同附属数据删掉，不进回收站。本应用把它改成永久保留：会话只有你在会话列表里删了才会进回收站。你自己在 ~/.claude/settings.json 里写了 cleanupPeriodDays 的，按你写的天数。</p></div>
+          </div>
+          <div class="sblock">
+            <div class="srow head">
+              <div class="sl"><b data-i18n>自动清理</b><p data-i18n>只清缓存、7 天没动过的临时文件、30 天前的 Claude Code 杂物；会话、你的文件、程序永不自动删</p><p class="tiny" id="st-auto-last"></p></div>
+              <div class="sc"><select id="st-every"><option value="day" data-i18n>每天</option><option value="week" data-i18n>每周</option><option value="month" data-i18n>每月</option></select> <input type="checkbox" class="sw" id="st-auto"></div>
+            </div>
+          </div>
+          <div id="st-cards"></div>
+          <div class="prov-state" id="st-result"></div>
+        </div>
+
+        <!-- ── 通知 ── -->
+        <div class="set-cat hidden" data-cat="device">
+          <h3 class="set-h" data-i18n>通知</h3>
+          <!-- 通知：任务跑完 / 等确认时提醒一下（Linux 版发桌面通知，桌面壳里由网关发） -->
+          <div class="sblock hidden" id="ntf-field">
+            <div class="srow sub">
+              <div class="sl"><p data-i18n>任务跑完时通知（窗口不在前台时才发）</p></div>
+              <div class="sc"><input type="checkbox" class="sw" id="ntf-done"></div>
+            </div>
+            <div class="srow sub">
+              <div class="sl"><p data-i18n>等你确认时通知（窗口不在前台时提醒你回来处理）</p></div>
+              <div class="sc"><input type="checkbox" class="sw" id="ntf-ask"></div>
+            </div>
+          </div>
+          <!-- 通知状态没读到（网关刚起、断网）：说出原因并可重试，不和「这个版本没有这项」一样整块消失（FIND-032） -->
+          <div class="sblock hidden" id="ntf-err-block">
+            <div class="prov-state warn" id="ntf-err"></div>
+            <div class="row-actions"><button class="btn sm ghost" id="ntf-retry" data-i18n>重试</button></div>
+          </div>
+        </div>
+  
+        <!-- ── 更新 ── -->
+        <div class="set-cat hidden" data-cat="update">
+          <h3 class="set-h" data-i18n>更新</h3>
+          <!-- 更新：Claude Code（版本、通道、自动更新）。只有 cccodroid 带，旧版里整块隐藏 -->
+          <div class="sblock hidden" id="upd-field">
+            <div class="srow head">
+              <div class="sl"><b data-i18n>版本</b></div>
+              <div class="sc"><button class="btn sm ghost" id="upd-check" data-i18n>检查更新</button></div>
+            </div>
+            <div id="upd-items"></div>
+            <div class="srow sub">
+              <div class="sl"><b data-i18n>Claude Code 跟哪个通道</b></div>
+              <div class="sc">
+                <select id="upd-channel">
+                  <option value="stable" data-i18n>CLI：stable</option>
+                  <option value="latest" data-i18n>CLI：latest</option>
+                  <option value="pinned" data-i18n>CLI：固定版本…</option>
+                </select>
+              </div>
+            </div>
+            <div class="srow sub">
+              <div class="sl"><b data-i18n>自动更新</b><p class="clamp" data-i18n>自动更新（默认开）：Claude Code 静默更新；新版应用下载好后提醒安装</p></div>
+              <div class="sc"><input type="checkbox" class="sw" id="upd-auto"></div>
+            </div>
+            <div class="tiny" id="upd-last"></div>
+          </div>
+        </div>
+  
+        <!-- ── 用量：只放入口，明细在「用量」页 ── -->
+        <div class="set-cat hidden" data-cat="usage">
+          <h3 class="set-h" data-i18n>用量</h3>
+          <div class="srow hidden" id="set-us-quota-row">
+            <div class="sl"><b data-i18n>本周额度</b><p id="set-us-quota-sub"></p></div>
+            <div class="sc"><span class="pill acc" id="set-us-quota"></span></div>
+          </div>
+          <div class="srow">
+            <div class="sl"><b data-i18n>使用统计</b><p data-i18n>按天 / 按型号 / 月报图</p></div>
+            <div class="sc"><button class="btn sm ghost" data-gopage="usage" data-i18n>打开</button></div>
+          </div>
+        </div>
+
+        <div class="set-cat hidden" data-cat="trouble">
+          <h3 class="set-h" data-i18n>排障</h3>
+          <div class="sblock">
+            <div class="srow head">
+              <div class="sl"><b data-i18n>运行状态</b></div>
+              <div class="sc"><button id="btn-cli-doctor" class="btn ghost sm" data-i18n>跑一次 doctor</button></div>
+            </div>
+            <pre id="status-box" class="mono" data-i18n>读取中…</pre>
+            <pre id="cli-out" class="mono hidden"></pre>
+          </div>
+        </div>
+  
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- ── 文件浏览器（全屏）── -->
+<div id="files" class="hidden">
+  <div class="fs-head">
+        <button id="fs-close" class="icon-btn" aria-label="关闭" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <div id="fs-crumbs" class="fs-crumbs mono"></div>
+        <button id="fs-up" class="icon-btn" aria-label="上级目录" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+    </button>
+        <button id="fs-newfile" class="icon-btn" aria-label="新建文件" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></svg>
+    </button>
+        <button id="fs-mkdir" class="icon-btn" aria-label="新建文件夹" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></svg>
+    </button>
+        <button id="fs-git" class="icon-btn" aria-label="版本（git）" title="版本（git）" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-12 7"/></svg>
+    </button>
+        <button id="fs-reload" class="icon-btn" aria-label="刷新" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>
+    </button>
+  </div>
+
+  <div class="fs-tools">
+        <label class="searchbox fs-sb"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="fs-search" type="search" placeholder="过滤当前目录…" data-i18n-attr="placeholder" autocomplete="off"></label>
+        <label class="fs-chk"><input type="checkbox" id="fs-hidden"> <span data-i18n>隐藏项</span></label>
+        <button id="fs-multi" class="btn ghost sm" aria-pressed="false" data-i18n>多选</button>
+        <button id="fs-pick" class="btn ghost sm" data-i18n>选文件…</button>
+  </div>
+
+  <div id="fs-roots" class="chips fs-roots"></div>
+
+  <div id="fs-arcbar" class="fs-arcbar hidden"></div>
+
+  <div id="fs-body">
+    <div id="fs-preview" class="fs-preview hidden"></div>
+    <div id="fs-list" class="list compact"></div>
+  </div>
+
+  <div class="fs-foot">
+    <span id="fs-count" class="tiny"></span>
+    <span id="fs-job" class="fs-job hidden"></span>
+        <button id="fs-del" class="btn sm danger hidden"></button>
+        <button id="fs-act" class="btn sm hidden"></button>
+        <button id="fs-insert" class="btn sm" data-i18n>插入到输入框</button>
+  </div>
+</div>
+
+<!-- ── 文件查看 / 编辑（全屏）── -->
+<div id="viewer" class="hidden">
+  <div class="vw-head">
+        <button id="vw-close" class="icon-btn" aria-label="关闭" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <div class="vw-title"><span id="vw-name" class="mono"></span><span id="vw-info" class="tiny"></span></div>
+    <div id="vw-acts" class="vw-acts"></div>
+  </div>
+  <div id="vw-body"></div>
+</div>
+
+<!-- ── git：改动 / 历史 / 对比（全屏，宽屏时停靠右侧）── -->
+<div id="git" class="hidden">
+  <div class="vw-head">
+        <button id="git-close" class="icon-btn" aria-label="关闭" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <div class="vw-title"><span id="git-name" class="mono"></span><span id="git-info" class="tiny"></span></div>
+        <button id="git-reload" class="icon-btn" aria-label="刷新" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>
+    </button>
+  </div>
+  <div id="git-sync" class="git-sync hidden"></div>
+  <div class="git-tabs">
+        <button class="git-tab" data-tab="changes" data-i18n>改动</button>
+        <button class="git-tab" data-tab="history" data-i18n>历史</button>
+        <button class="git-tab" data-tab="branches" data-i18n>分支</button>
+  </div>
+  <div id="git-body"></div>
+</div>
+
+<!-- ── 终端（全屏）── -->
+<div id="term" class="hidden">
+  <div class="term-head">
+        <button id="term-close" class="icon-btn" aria-label="关闭" data-i18n-attr="aria-label">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <div id="term-tabs" class="term-tabs"></div>
+        <button id="term-text" class="icon-btn" aria-label="以文本查看（可选中复制）" title="以文本查看（可选中复制）" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><path d="M8 4h8l4 4v12H8zM16 4v4h4M4 8v12h4"/></svg>
+    </button>
+        <button id="term-new" class="icon-btn" aria-label="新终端" title="新终端" data-i18n-attr="aria-label,title">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+  </div>
+  <div id="term-screens"></div>
+  <div id="term-keys" class="term-keys"></div>
+</div>
+<div id="term-textview" class="hidden">
+  <div class="term-head">
+        <span class="tiny" data-i18n>长按选择文字</span>
+        <button id="term-text-copy" class="btn ghost sm" data-i18n>复制</button>
+        <button id="term-text-close" class="btn ghost sm" data-i18n>关闭</button>
+  </div>
+  <pre id="term-text-pre" class="mono"></pre>
+</div>
+
+<!-- ── 图片查看器 ── -->
+<div id="lightbox" class="hidden">
+  <img id="lightbox-img" alt="">
+  <div class="lb-bar">
+    <span id="lightbox-cap" class="mono"></span>
+        <button id="lightbox-dl" class="btn ghost sm"></button>
+        <button id="lightbox-close" class="btn ghost sm" data-i18n>关闭</button>
+  </div>
+</div>
+
+<!-- ── 快捷面板（＋ 按钮）── -->
+<div id="sheet" class="hidden">
+  <!-- ＋ 面板：上面两格是「给 Claude 东西」（附件已并进来，输入框里不再单独放回形针），下面是常用操作。
+       宽屏是浮在 ＋ 上方的小卡片（app.js 定位），窄屏是底部弹层 -->
+  <div class="sheet-panel">
+    <div class="sheet-grab"></div>
+    <div class="sheet-tiles">
+      <button class="sheet-tile" data-act="attach"><svg viewBox="0 0 24 24"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"/></svg><span data-i18n>附加文件</span></button>
+      <button class="sheet-tile" data-act="browse"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n>浏览文件</span></button>
+    </div>
+    <div class="sheet-list">
+      <button class="sheet-item" data-act="model"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span data-i18n>模型与思考强度</span></button>
+      <button class="sheet-item" data-act="new"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span data-i18n>新建会话</span></button>
+      <button class="sheet-item" data-act="context"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5V12l6 6"/></svg><span data-i18n>上下文占用</span><code>/context</code></button>
+      <button class="sheet-item" data-act="compact"><svg viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M9 4l3 3 3-3M9 20l3-3 3 3"/></svg><span data-i18n>压缩上下文</span><code>/compact</code></button>
+      <button class="sheet-item" data-act="cost"><svg viewBox="0 0 24 24"><path d="M12 3v18M16.5 7.5c0-1.7-2-3-4.5-3s-4.5 1.3-4.5 3 2 2.6 4.5 3 4.5 1.4 4.5 3.3-2 3.2-4.5 3.2-4.5-1.4-4.5-3.2"/></svg><span data-i18n>花费</span><code>/cost</code></button>
+      <button class="sheet-item" data-act="usage"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span data-i18n>用量</span><code>/usage</code></button>
+      <button class="sheet-item" data-act="config"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg><span data-i18n>配置</span><code>/config</code></button>
+      <button class="sheet-item" data-act="mcp"><svg viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></svg><span data-i18n>MCP 服务器</span><code>/mcp</code></button>
+      <button class="sheet-item" data-act="agents"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 4a3 3 0 0 1 0 6M21 20a6 6 0 0 0-4-5.6"/></svg><span data-i18n>子代理</span><code>/agents</code></button>
+      <button class="sheet-item" data-act="caps"><svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L18.5 10H12z"/></svg><span data-i18n>能力</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 浏览器窗格（宽屏）：只是占位，真正的浏览器是外壳的原生视图，按这个框的位置摆上来（layout.js → CCApp.paneBounds）── -->
+<div id="browser" class="hidden"><div id="browser-slot"></div></div>
+
+<!-- ── 大屏：右侧工作区的标签与分隔条（layout.js 管）── -->
+<div id="ws-tabs"></div>
+<div id="ws-split" title="拖动调整宽度，双击复原" data-i18n-attr="title"></div>
+<div id="toast" class="hidden" role="status" aria-live="polite"></div>
+<!-- 读屏专用：只播「回复完成 / 出错」这种一句话结果。整块 #chat 当 live region 会让流式每帧都触发播报（0.6.9 审计 195-L.7） -->
+<div id="sr-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="dropzone" class="hidden"><div data-i18n>松手即附加</div></div>
+
+<!-- 顺序要紧：语言注册表 → i18n（定义 I18N.t，按需插入当前语言的词典并翻译静态标记）→ layout（大屏分档）→ app.js -->
+<script src="/langs.js"></script>
+<script src="/i18n.js"></script>
+<script src="/layout.js"></script>
+<script src="/lineage/map.js"></script>
+<script src="/app.js"></script>
+<script src="/fallback.js"></script>
+</body>
+</html>

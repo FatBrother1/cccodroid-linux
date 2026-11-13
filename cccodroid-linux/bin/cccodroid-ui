@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────
+# cccodroid-ui：启动 Qt6 WebEngine 原生窗口
+#
+# systemd 窗口服务（cccodroid-ui.service）和没有 systemd 时的 `cccodroid open` 共用这一个入口，
+# 单实例锁也在这里：不管从哪条路径起，同一时刻只会有一个窗口、一份 WebEngine 配置目录。
+#
+# 用法：cccodroid-ui [--kiosk]
+# 环境变量：
+#   CCCODROID_UI_ARGS       和命令行参数等价，例如 "--kiosk"（窗口服务通过 EnvironmentFile 传入）
+#   CCCODROID_QML           指定 qml 可执行文件
+#   CCCODROID_DOWNLOAD_DIR  下载目录（默认 XDG 下载目录，没有就 ~/Downloads）
+#   CCCODROID_UI_DEBUG        页面操控用的 Chromium 远程调试端口；默认自动挑一个空闲端口（只监听回环），
+#                             设成端口可用固定端口排查界面，设成 0 关闭
+#
+# 游戏模式：在 gamescope 会话里（XDG_CURRENT_DESKTOP=gamescope 或有 GAMESCOPE_WAYLAND_DISPLAY）自动加 --kiosk，
+# 并让 Qt 走 gamescope 的 XWayland（QT_QPA_PLATFORM=xcb）。桌面模式不受影响。
+# ─────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+SELF_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd -P -- "$SELF_DIR/.." && pwd -P)"                 # versions/<版本>/
+PREFIX="${CCCODROID_PREFIX:-$(cd -P -- "$ROOT/../.." && pwd -P)}"
+CURRENT="$PREFIX/current"
+
+die() { printf '[cccodroid-ui] 错误：%s\n' "$*" >&2; exit 1; }
+
+PORT="$( ( . "$PREFIX/install.env" 2>/dev/null; printf '%s' "${CCCODROID_PORT:-8790}" ) || printf '8790' )"
+
+QML=""
+for cand in "${CCCODROID_QML:-}" /usr/lib/qt6/bin/qml /usr/bin/qml6 /usr/bin/qml; do
+  if [ -n "$cand" ] && [ -x "$cand" ]; then QML="$cand"; break; fi
+done
+[ -n "$QML" ] || die "找不到 Qt6 的 qml 运行时（SteamOS 自带 /usr/lib/qt6/bin/qml）"
+
+MAIN_QML="$CURRENT/desktop/main.qml"
+[ -f "$MAIN_QML" ] || die "找不到 $MAIN_QML"
+
+TOKEN_FILE="$PREFIX/home/.gateway-token"
+DATA_DIR="$PREFIX/home/.qtwebengine"
+
+DOWNLOAD_DIR="${CCCODROID_DOWNLOAD_DIR:-}"
+if [ -z "$DOWNLOAD_DIR" ] && command -v xdg-user-dir >/dev/null 2>&1; then
+  DOWNLOAD_DIR="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+fi
+case "$DOWNLOAD_DIR" in ""|"$HOME"|"$HOME/") DOWNLOAD_DIR="$HOME/Downloads" ;; esac
+
+mkdir -p "$DATA_DIR" "$DOWNLOAD_DIR" "$PREFIX/logs" "$PREFIX/run"
+
+# 参数：命令行优先，其次环境变量。
+ARGS=("$@")
+if [ ${#ARGS[@]} -eq 0 ] && [ -n "${CCCODROID_UI_ARGS:-}" ]; then
+  # shellcheck disable=SC2206
+  ARGS=(${CCCODROID_UI_ARGS})
+fi
+KIOSK=0
+for a in "${ARGS[@]}"; do
+  case "$a" in
+    --kiosk|-k) KIOSK=1 ;;
+    *) die "未知参数：$a" ;;
+  esac
+done
+
+# gamescope（游戏模式）：窗口是全屏独占的，没有标题栏，手柄 / 触屏操作；Qt 不要去猜 Wayland，直接用 XWayland。
+if [ "${XDG_CURRENT_DESKTOP:-}" = gamescope ] || [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+  KIOSK=1
+  export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+fi
+QML_ARGS=()
+[ "$KIOSK" = 1 ] && QML_ARGS+=(--kiosk)
+
+# 单实例：锁由 qml 进程自己持有（exec 之后 fd 9 跟着进程走），窗口活着锁就在。
+LOCK="${XDG_RUNTIME_DIR:-$PREFIX/run}/cccodroid-ui.lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "[cccodroid-ui] 窗口已经在运行"
+  exit 0
+fi
+
+# 原生桥口令：每次启动换一个，只放 0600 文件（不进命令行），窗口读走后经首页地址的 #k= 交给网页（见 main.qml / theme.js）。
+# 放在抢到单实例锁之后写：没抢到锁的那次不会把在跑的窗口的口令文件覆盖掉。
+KEY_FILE="${XDG_RUNTIME_DIR:-$PREFIX/run}/cccodroid-ui.key"
+( umask 077; head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$KEY_FILE" ) || die "写不了桥口令文件 $KEY_FILE"
+
+# QML 里用同步 XHR 读令牌文件；Qt 默认禁止 file:// 读取，必须开这个开关。
+export QML_XHR_ALLOW_FILE_READ=1
+# Chromium 远程调试：给「页面操控」MCP（cccodroid ui-mcp）用，只监听回环。
+# 端口随机，写进 <runtime>/cccodroid-cdp.json（0600）；CCCODROID_UI_DEBUG=端口 可指定固定端口，
+# CCCODROID_UI_DEBUG=0 关闭（页面操控工具会提示窗口没开）。
+RUN_DIR="${XDG_RUNTIME_DIR:-$PREFIX/run}"
+CDP_PORT="${CCCODROID_UI_DEBUG:-auto}"
+if [ "$CDP_PORT" = "0" ]; then
+  rm -f "$RUN_DIR/cccodroid-cdp.json"
+else
+  if [ "$CDP_PORT" = "auto" ]; then
+    NODE_BIN="$ROOT/runtime/node/bin/node"
+    [ -x "$NODE_BIN" ] || NODE_BIN="$(command -v node || true)"
+    if [ -n "$NODE_BIN" ]; then
+      CDP_PORT="$("$NODE_BIN" -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;console.log(p);s.close()})' 2>/dev/null || true)"
+    fi
+    case "$CDP_PORT" in ''|auto) CDP_PORT="" ;; esac
+  fi
+  if [ -n "$CDP_PORT" ]; then
+    export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$CDP_PORT"
+    ( umask 077; printf '{"port":%s,"pid":%s,"started":%s}\n' "$CDP_PORT" "$$" "$(date +%s)" > "$RUN_DIR/cccodroid-cdp.json" ) \
+      || echo "[cccodroid-ui] 警告：写不了 $RUN_DIR/cccodroid-cdp.json，页面操控工具会不可用" >&2
+  fi
+fi
+
+# "--" 之后是传给 main.qml 的应用参数，qml 不会再把它们当成要加载的文件。
+exec "$QML" "$MAIN_QML" -- \
+  "--token-file=$TOKEN_FILE" \
+  "--key-file=$KEY_FILE" \
+  "--base-url=http://127.0.0.2:$PORT" \
+  "--data-dir=$DATA_DIR" \
+  "--download-dir=$DOWNLOAD_DIR" \
+  "${QML_ARGS[@]}"

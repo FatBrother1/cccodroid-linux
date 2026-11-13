@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────
+# cc-detach：把需要长期运行的程序起在 cccodroid 网关的 cgroup 之外
+#
+# 为什么需要：cccodroid-gateway.service 是 KillMode=mixed。网关停止、重启、
+# cccodroid update 时，它 cgroup 里的所有进程都会被 SIGKILL。在 Claude 的 Bash
+# 里用 & / nohup / setsid 起的程序虽然脱离了进程树，仍然留在这个 cgroup 里
+# （Steam、游戏、机器人、开发服务器都中过招），输出还会灌进网关的日志。
+# 用 systemd-run 起成独立的用户服务，就不受网关重启影响，日志也在自己的 unit 里。
+#
+# 用法：
+#   cc-detach [选项] [--] 命令 [参数...]    起一个独立服务
+#   cc-detach ls                            列出由 cc-detach 起的服务
+#   cc-detach logs 名称 [journalctl 参数]   看输出（加 -f 跟随）
+#   cc-detach stop 名称...                  停止（连它的子进程一起）
+#
+# 选项：
+#   -n, --name 名称      固定服务名为 ccd-名称；同名在跑则拒绝（退出码 3）
+#                        默认 ccd-<命令名>-<随机>
+#   -C, --chdir 目录     工作目录（默认当前目录）
+#   -e, --env 变量[=值]  额外传入的环境变量，可重复；不带 =值 时取当前值
+#   -i, --inherit-env    传入当前全部环境变量（去掉 CCAPP_* 等网关内部变量）
+#       --forking        程序自己会 fork 到后台再退出（如 adb start-server）
+#   -h, --help           显示本帮助
+#
+# 默认只传 PATH、LANG/LC_*、TZ，以及当前已设置的 DISPLAY / WAYLAND_DISPLAY /
+# XAUTHORITY；其余环境变量用用户服务管理器自带的那份（桌面会话变量都在里面）。
+# 短命令（这一轮就结束的）不需要用它。
+# ─────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+PROG="cc-detach"
+die() { printf '%s: %s\n' "$PROG" "$1" >&2; exit "${2:-1}"; }
+
+usage() {
+  cat <<'EOF'
+用法：
+  cc-detach [选项] [--] 命令 [参数...]    起一个独立服务（不受网关重启影响）
+  cc-detach ls                            列出由 cc-detach 起的服务
+  cc-detach logs 名称 [journalctl 参数]   看输出（加 -f 跟随）
+  cc-detach stop 名称...                  停止（连它的子进程一起）
+
+选项：
+  -n, --name 名称      固定服务名为 ccd-名称；同名在跑则拒绝（退出码 3）
+                       默认 ccd-<命令名>-<随机>
+  -C, --chdir 目录     工作目录（默认当前目录）
+  -e, --env 变量[=值]  额外传入的环境变量，可重复；不带 =值 时取当前值
+  -i, --inherit-env    传入当前全部环境变量（去掉 CCAPP_* 等网关内部变量）
+      --forking        程序自己会 fork 到后台再退出（如 adb start-server）
+  -h, --help           显示本帮助
+
+例：
+  cc-detach -n steam -- steam -silent
+  cc-detach -n bot -C ~/bjbot -- python3 bot.py
+  cc-detach logs bot -f
+  cc-detach stop bot
+EOF
+}
+
+# systemd-run --user 需要用户总线；从网关的 Bash 里起时环境里往往没有这两个变量。
+need_bus() {
+  command -v systemd-run >/dev/null 2>&1 || die "找不到 systemd-run"
+  command -v systemctl >/dev/null 2>&1 || die "找不到 systemctl"
+  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  export XDG_RUNTIME_DIR
+  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+  [ -S "$XDG_RUNTIME_DIR/bus" ] || die "没有 systemd 用户会话（$XDG_RUNTIME_DIR/bus 不存在）"
+}
+
+# 名称 → unit 名：接受 steam、ccd-steam、ccd-steam.service 或带随机后缀的完整名。
+unit_of() {
+  local n="$1"
+  n="${n%.service}"
+  case "$n" in ccd-*) ;; *) n="ccd-$n" ;; esac
+  [[ "$n" =~ ^ccd-[A-Za-z0-9_.@-]+$ ]] || die "名称不合法：$1（只能用字母、数字和 _ . @ -）"
+  printf '%s.service\n' "$n"
+}
+
+short_of() { local n="${1%.service}"; printf '%s\n' "${n#ccd-}"; }
+
+# systemd 会对服务命令行里的 $VAR 做替换（实测：% 不会被展开，环境变量的值也不会），
+# 所以只有命令行参数里的 $ 要写成 $$ 才是字面量。
+esc_arg() { local s="$1"; printf '%s' "${s//\$/\$\$}"; }
+
+sub="${1:-}"
+case "$sub" in
+  ls|list)
+    need_bus
+    out="$(systemctl --user list-units 'ccd-*.service' --all --plain --no-pager --no-legend 2>/dev/null || true)"
+    if [ -z "$out" ]; then
+      echo "没有由 cc-detach 起的服务"
+    else
+      printf '%s\n' "$out"
+    fi
+    exit 0
+    ;;
+  stop)
+    shift
+    [ $# -ge 1 ] || die "stop 需要至少一个名称"
+    need_bus
+    units=()
+    for n in "$@"; do units+=("$(unit_of "$n")"); done
+    systemctl --user stop "${units[@]}"
+    systemctl --user reset-failed "${units[@]}" >/dev/null 2>&1 || true
+    printf '已停止：%s\n' "${units[*]}"
+    exit 0
+    ;;
+  logs)
+    shift
+    [ $# -ge 1 ] || die "logs 需要名称"
+    need_bus
+    unit="$(unit_of "$1")"; shift
+    exec journalctl --user -u "$unit" --no-pager -n 100 "$@"
+    ;;
+  -h|--help|help|"")
+    usage
+    exit 0
+    ;;
+esac
+
+# ── 起一个服务 ────────────────────────────────────────────────────────
+name=""
+chdir="$PWD"
+inherit=0
+stype="exec"
+extra_env=()
+
+while (($#)); do
+  case "$1" in
+    -n|--name)
+      [ $# -ge 2 ] || die "$1 需要参数"; name="$2"; shift 2 ;;
+    --name=*)
+      name="${1#*=}"; shift ;;
+    -C|--chdir)
+      [ $# -ge 2 ] || die "$1 需要参数"; chdir="$2"; shift 2 ;;
+    --chdir=*)
+      chdir="${1#*=}"; shift ;;
+    -e|--env)
+      [ $# -ge 2 ] || die "$1 需要参数"; extra_env+=("$2"); shift 2 ;;
+    --env=*)
+      extra_env+=("${1#*=}"); shift ;;
+    -i|--inherit-env)
+      inherit=1; shift ;;
+    --forking)
+      stype="forking"; shift ;;
+    -h|--help)
+      usage; exit 0 ;;
+    --)
+      shift; break ;;
+    -*)
+      die "未知选项：$1（cc-detach --help 查看用法）" ;;
+    *)
+      break ;;
+  esac
+done
+
+[ $# -ge 1 ] || die "缺少要运行的命令（cc-detach --help 查看用法）"
+need_bus
+
+[ -d "$chdir" ] || die "工作目录不存在：$chdir"
+chdir="$(cd -P -- "$chdir" && pwd -P)"
+
+# 命令解析成绝对路径：服务里的 PATH 不一定和这里一样，也让"找不到命令"在这里就报错。
+cmd0="$1"; shift
+case "$cmd0" in
+  */*)
+    [ -x "$cmd0" ] && [ -f "$cmd0" ] || die "不是可执行文件：$cmd0"
+    bin="$(cd -P -- "$(dirname -- "$cmd0")" && pwd -P)/$(basename -- "$cmd0")"
+    ;;
+  *)
+    bin="$(type -P -- "$cmd0" 2>/dev/null || true)"
+    [ -n "$bin" ] || die "找不到命令：$cmd0"
+    ;;
+esac
+
+if [ -n "$name" ]; then
+  unit="$(unit_of "$name")"
+  if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+    die "已在运行：$unit（先 cc-detach stop $(short_of "$unit")）" 3
+  fi
+else
+  base="$(basename -- "$cmd0")"
+  base="${base//[^A-Za-z0-9_.@-]/-}"
+  rnd="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  unit="ccd-${base:0:40}-${rnd}.service"
+fi
+
+args=(--user --collect --quiet --no-ask-password
+  --unit="$unit"
+  --description="cc-detach: $cmd0 $*"
+  --working-directory="$chdir"
+  --property="Type=$stype")
+
+# 环境变量：默认只传最小集合，保证 prefix/bin 里的工具在服务里也找得到。
+if [ "$inherit" -eq 1 ]; then
+  while IFS= read -r -d '' kv; do
+    k="${kv%%=*}"
+    [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    case "$k" in
+      CCAPP_*|INVOCATION_ID|JOURNAL_STREAM|SYSTEMD_EXEC_PID|MANAGERPID|LISTEN_*|NOTIFY_SOCKET|_|SHLVL|PWD|OLDPWD) continue ;;
+    esac
+    args+=("--setenv=$k=${kv#*=}")
+  done < <(env -0)
+else
+  for k in PATH LANG LANGUAGE TZ DISPLAY WAYLAND_DISPLAY XAUTHORITY; do
+    if [ -n "${!k+x}" ]; then args+=("--setenv=$k=${!k}"); fi
+  done
+  for k in "${!LC_@}"; do
+    args+=("--setenv=$k=${!k}")
+  done
+fi
+for kv in "${extra_env[@]}"; do
+  k="${kv%%=*}"
+  [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "环境变量名不合法：$k"
+  case "$k" in CCAPP_*) die "不传网关内部变量：$k" ;; esac
+  if [[ "$kv" == *=* ]]; then
+    args+=("--setenv=$k=${kv#*=}")
+  elif [ -n "${!k+x}" ]; then
+    args+=("--setenv=$k=${!k}")
+  fi
+done
+
+cmd=("$(esc_arg "$bin")")
+for a in "$@"; do cmd+=("$(esc_arg "$a")"); done
+
+if ! systemd-run "${args[@]}" -- "${cmd[@]}"; then
+  die "启动失败：$unit（systemctl --user status ${unit%.service} 看原因）"
+fi
+
+pid="$(systemctl --user show -p MainPID --value "$unit" 2>/dev/null || true)"
+short="$(short_of "$unit")"
+printf '已启动：%s（主进程 %s）\n' "$unit" "${pid:-?}"
+printf '  日志：cc-detach logs %s\n' "$short"
+printf '  停止：cc-detach stop %s\n' "$short"

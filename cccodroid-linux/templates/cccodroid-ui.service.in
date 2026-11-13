@@ -1,0 +1,16 @@
+# 由 cccodroid install.sh 生成；重装会覆盖，不要手工修改。
+# 原生窗口（Qt6 WebEngine）。默认不随登录自启：用 cccodroid open [--kiosk] 打开，cccodroid stop 关闭。
+# 显示环境（WAYLAND_DISPLAY / DISPLAY / XAUTHORITY）用用户服务管理器自带的那份，
+# 桌面会话里它们已经由 Plasma 导入；不在这里写死。
+# 全屏与否由 cccodroid open 写进 %t/cccodroid-ui.env 的 CCCODROID_UI_ARGS 决定。
+[Unit]
+Description=cccodroid 原生窗口（Qt6 WebEngine）
+After=graphical-session.target cccodroid-gateway.service
+Wants=cccodroid-gateway.service
+
+[Service]
+Type=simple
+EnvironmentFile=-%t/cccodroid-ui.env
+ExecStart="@CURRENT@/bin/cccodroid-ui"
+Restart=on-failure
+RestartSec=2

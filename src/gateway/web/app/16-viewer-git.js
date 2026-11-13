@@ -1,0 +1,1184 @@
+  // ── 文件查看 / 编辑器 ──────────────────────────────────────────────
+  // 文本 / 代码：直接改，保存时带上打开那一刻的 mtime —— Claude 在这期间改过就先问，别互相覆盖。
+  // Markdown：默认渲染，可切到编辑。图片：点一下在「适应屏幕」和「原始大小」之间切。
+  // PDF：pdf.js（按需加载），页面进视野才画、离远了就释放，几百页的也不会把 WebView 撑爆。
+  // ── git 面板：改动 / 历史 / 逐行对比 / 提交 / 撤销 ──────────────────────
+  // 从文件面板（当前目录所在的仓库）或编辑器（这个文件）打开。只是 git 命令的界面，网关见 handleGit
+  const gitEl = $("git");
+  const GIT = { dir: "", root: "", tab: "changes", status: null, sel: new Set(), file: "", view: null, wrap: true };
+  const gapi = (act, params) => api(`/api/git/${act}?` + new URLSearchParams({ dir: GIT.dir, ...(params || {}) }));
+  const gpost0 = (act, body, dir = GIT.dir) => api(`/api/git/${act}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dir, ...body }) });
+  // 仓库自己的配置会在这一步执行命令（过滤器、钩子等）：网关回 untrusted，列出来让用户确认一次，确认后网关按仓库记住。
+  // 仓库在发起时取定：等确认的工夫里打开了别的仓库，重试也还是发给原来那个（GHSA-w37q）
+  const gpost = async (act, body) => {
+    const dir = GIT.dir;
+    try { return await gpost0(act, body, dir); }
+    catch (e) {
+      const b = e.body;
+      if (!(e.status === 409 && b && b.error === "untrusted")) throw e;
+      if (!confirm(b.message + "\n\n" + b.risks.slice(0, 12).join("\n") + (b.risks.length > 12 ? "\n…" : "") + "\n\n" + t("这些命令来自仓库里的配置文件。从网上下载、别人给的仓库，先在终端里看清楚再继续。继续？"))) throw new Error(t("已取消"));
+      return gpost0(act, { ...body, trust: b.fp }, dir);
+    }
+  };
+  const GS = { modified: "M", added: "A", new: "U", deleted: "D", renamed: "R", conflict: "!" };
+  const gsTitle = (k) => ({ modified: t("已修改"), added: t("已添加"), new: t("新文件"), deleted: t("已删除"), renamed: t("已改名"), conflict: t("有冲突") })[k] || k;
+  const gnum = (f) => (f.add == null && f.del == null) ? (f.binary ? `<span class="gn">${t("二进制")}</span>` : "")
+    : `<span class="gn"><span class="a">+${f.add ?? 0}</span> <span class="d">−${f.del ?? 0}</span></span>`;
+  const gbdi = (s) => `<bdi>${esc(s)}</bdi>`;
+
+  /** 打开：dir 可以是目录或文件；opts.file 指定先看哪个文件的对比，opts.tab = "history" 看历史 */
+  async function openGit(dir, opts = {}) {
+    Object.assign(GIT, { dir, root: "", tab: opts.tab || "changes", status: null, file: opts.file || "", view: opts.file ? (opts.tab === "history" ? { kind: "log" } : { kind: "diff" }) : null });
+    GIT.sel = new Set(); GIT.known = null;    // 重开和第一次一样默认全选（审查 C-010）
+    GIT.status = null; gitSyncBar();          // 先收起上一个仓库的同步栏；加载失败也不能留着它（196 Git 域第 12 条）
+    if (GIT.msgRoot !== dir) GIT.msg = "";   // 提交说明草稿只在同一个仓库面板里留着
+    MO.cancel(gitEl); gitEl.classList.remove("hidden"); window.CCLayout && CCLayout.raise("git");
+    $("git-name").textContent = String(dir).split("/").pop();
+    $("git-info").textContent = "";
+    await gitLoad();
+  }
+  function closeGit() { dropReq("git"); dropReq("gitbody"); MO.hide(gitEl, MO.paneOut(), 170, () => { $("git-body").innerHTML = ""; $("git-sync").classList.add("hidden"); }); }
+  $("git-close").addEventListener("click", closeGit);
+  $("git-reload").addEventListener("click", () => gitLoad());
+  gitEl.querySelector(".git-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".git-tab"); if (!b) return;
+    GIT.tab = b.dataset.tab; GIT.view = null; GIT.file = ""; gitRender();
+  });
+
+  async function gitLoad() {
+    dropReq("gitbody");   // 换仓库 / 重读：上一个仓库在途的历史、对比读取一并作废（审查 #52 C-007）
+    $("git-body").innerHTML = `<div class="vw-empty">${t("读取中…")}</div>`;
+    // 先开 A 仓库再开 B：A 的状态迟到不许盖上来，不然显示的是 A、撤销提交却作用于 B（审查 #49 P2-2）
+    const ok = latest("git"), dir = GIT.dir;
+    let s;
+    try { s = await gapi("status"); }
+    catch (e) {
+      if (ok()) {
+        GIT.status = null; gitSyncBar(); $("git-info").textContent = "";   // 别留着上一个仓库的同步栏和分支（196 Git 域第 12 条）
+        $("git-body").innerHTML = `<div class="vw-empty">${esc(e.message)}</div>`;
+      }
+      return;
+    }
+    if (!ok() || GIT.dir !== dir) return;
+    if (s.notRepo) {
+      GIT.status = null;
+      $("git-info").textContent = "";
+      $("git-sync").classList.add("hidden");
+      $("git-body").innerHTML = `<div class="vw-empty"><div>${t("这个文件夹还不是 git 仓库。")}</div>
+        <div class="tiny">${esc(s.dir || GIT.dir)}</div>
+        <div class="tiny">${t("建一个仓库后，每次改动都能看到改了哪几行，还能随时退回之前的版本。")}</div>
+        <button class="btn sm" data-a="init">${t("在这里建一个仓库")}</button></div>`;
+      $("git-body").querySelector('[data-a="init"]').onclick = async () => {
+        try { await gpost("init"); toast(t("已建好仓库")); gitLoad(); } catch (e2) { toast(e2.message, true); }
+      };
+      return;
+    }
+    if (s.error) {
+      GIT.status = null; gitSyncBar(); $("git-info").textContent = "";   // status 失败同样不能沿用上一个仓库的同步栏
+      $("git-body").innerHTML = `<div class="vw-empty">${esc(s.error)}</div>`;
+      return;
+    }
+    GIT.status = s; GIT.root = s.root;
+    // 默认全选；刷新时保留用户的取舍，新冒出来的文件默认选上
+    const known = GIT.known || new Set();
+    for (const f of s.files) if (!known.has(f.path)) GIT.sel.add(f.path);
+    for (const p of [...GIT.sel]) if (!s.files.some((f) => f.path === p)) GIT.sel.delete(p);
+    GIT.known = new Set(s.files.map((f) => f.path));
+    $("git-name").textContent = s.root.split("/").pop();
+    $("git-info").textContent = s.files.length ? t("{n} 个文件有改动", { n: s.files.length }) : t("没有改动");   // 分支与领先/落后在同步栏
+    gitSyncBar();
+    gitRender();
+  }
+
+  // ── 同步栏：当前分支 → 上游，抓取 / 拉取 / 推送 ──
+  // 拉取只做快进；分叉了就停下说清楚，可以交给 Claude 合并。推送第一次会顺便建立上游关联
+  // 在忙的同步按仓库记：A 的推送还在跑时打开 B，B 的按钮照常可用，A 的回执也只落在 A 上（#177-2）
+  const GIT_BUSY = new Map();   // dir → fetch / pull / push
+  function gitSyncBar() {
+    const s = GIT.status, bar = $("git-sync");
+    if (!s) { bar.classList.add("hidden"); return; }
+    bar.classList.remove("hidden");
+    const gitBusy = GIT_BUSY.get(GIT.dir) || "";
+    const busy = (a) => gitBusy === a ? " …" : "";
+    const dis = gitBusy ? "disabled" : "";
+    bar.innerHTML = `<span class="gsy-br" data-a="branches" title="${esc(t("切换或新建分支"))}">⎇ ${gbdi(s.branch || "?")}</span>
+      <span class="tiny gsy-up">${s.upstream ? "→ " + gbdi(s.upstream) : esc(t("还没关联远端分支"))}</span>
+      <span style="flex:1"></span>
+      <button class="btn ghost sm" data-a="fetch" ${dis} title="${esc(t("看看远端有没有新提交（不改动你的文件）"))}">${t("抓取")}${busy("fetch")}</button>
+      <button class="btn ghost sm" data-a="pull" ${dis || (s.upstream ? "" : "disabled")} title="${esc(t("把远端的新提交拿下来（只快进）"))}">${t("拉取")}${s.behind ? " ↓" + s.behind : ""}${busy("pull")}</button>
+      <button class="btn sm" data-a="push" ${dis} title="${esc(t("把本地的新提交推上去"))}">${t("推送")}${s.ahead ? " ↑" + s.ahead : ""}${busy("push")}</button>`;
+  }
+  $("git-sync").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-a]"); if (!b || b.disabled) return;
+    const a = b.dataset.a;
+    if (a === "branches") { GIT.tab = "branches"; GIT.view = null; GIT.file = ""; return gitRender(); }
+    const dir = GIT.dir, root = GIT.root;
+    if (GIT_BUSY.has(dir)) return;
+    if (a === "push" && GIT.status && !GIT.status.upstream && !confirm(t("第一次推送 {b}：会在远端建一个同名分支并关联起来。继续？", { b: GIT.status.branch }))) return;
+    GIT_BUSY.set(dir, a); gitSyncBar();
+    // 回执到的时候面板已经换了仓库：提示前面带上原仓库名，别让人以为是眼前这个
+    const tag = (m) => GIT.dir === dir ? m : (root || dir).split("/").pop() + ": " + m;
+    try {
+      const r = await gpost(a);
+      toast(tag(r.message || t("完成")));
+    } catch (err) {
+      const m = tag(err.message || "");
+      // 分叉：交给 Claude 合并（它会先说明打算怎么做，冲突时会停下来问）。仓库用发起时的，不读当前面板
+      if (a === "pull" && err.body && err.body.code === "diverged") {
+        if (confirm(m + "\n\n" + t("让 Claude 帮你把远端的提交合并进来？"))) {
+          GIT_BUSY.delete(dir);
+          if (GIT.dir === dir) closeGit();
+          send(t("{root} 的当前分支和远端分叉了。请先 git fetch，说明两边各有哪些提交，然后把远端的提交合并进来（能变基就变基，有冲突先停下来问我），最后告诉我结果，不要推送。", { root: root || dir }));
+          return;
+        }
+      } else toast(m, true);
+    }
+    GIT_BUSY.delete(dir);
+    if (GIT.dir !== dir) return;
+    // 不再把 known 清空：抓取/拉取/推送后保留用户的勾选，只有新冒出来的文件默认选上（196 Git 域第 6 条）
+    gitLoad();
+  });
+
+  function gitRender() {
+    dropReq("gitbody");    // 切了标签 / 视图：在途的历史、对比、分支读取作废（审查 C-007）
+    gitEl.querySelectorAll(".git-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === GIT.tab));
+    if (GIT.view && GIT.view.kind === "diff") return gitShowDiff(GIT.file, GIT.view.commit);
+    if (GIT.view && GIT.view.kind === "commit") return gitShowCommit(GIT.view.commit);
+    if (GIT.tab === "history") return gitShowLog(GIT.file);
+    if (GIT.tab === "branches") return gitShowBranches();
+    gitShowChanges();
+  }
+
+  function gitShowChanges() {
+    const s = GIT.status; if (!s) return;
+    const box = $("git-body");
+    if (!s.files.length) { box.innerHTML = `<div class="vw-empty">${t("工作区是干净的：上次提交之后没有改动。")}</div>`; return; }
+    const n = GIT.sel.size;
+    // 整块重画会换掉说明框：先把写了一半的说明收起来，画完放回去（#146-1：以前点一下全选或看一次对比再回来就没了）
+    if ($("git-msg")) GIT.msg = $("git-msg").value;
+    box.innerHTML = `<div class="git-row tiny"><label><input type="checkbox" id="git-all" ${n === s.files.length ? "checked" : ""}> ${t("全选")}</label>
+        <span style="flex:1"></span><span>${t("点文件看改了哪几行")}</span></div>
+      ${s.files.map((f, i) => `<div class="git-row" data-i="${i}">
+        <input type="checkbox" data-ck="${i}" ${GIT.sel.has(f.path) ? "checked" : ""}>
+        <span class="gs gs-${esc(f.kind)}" title="${esc(gsTitle(f.kind))}">${Object.hasOwn(GS, f.kind) ? GS[f.kind] : "?"}</span>
+        <span class="gp" data-open="${i}">${gbdi(f.orig ? f.orig + " → " + f.path : f.path)}</span>
+        ${gnum(f)}
+        <button class="btn ghost sm" data-undo="${i}" title="${esc(t("把这个文件改回上次提交时的样子"))}">${t("撤销")}</button>
+      </div>`).join("")}
+      <div class="git-commit">
+        <textarea id="git-msg" placeholder="${esc(t("提交说明：这次改了什么（必填）"))}"></textarea>
+        <div id="git-id" class="hidden"></div>
+        <div class="row-actions"><button class="btn sm" id="git-do" ${n ? "" : "disabled"}>${t("提交选中的 {n} 个文件", { n })}</button>
+          <button class="btn ghost sm" id="git-ask">${t("让 Claude 写说明并提交")}</button></div>
+      </div>`;
+    const msgEl = box.querySelector("#git-msg");
+    msgEl.value = GIT.msg || ""; GIT.msgRoot = GIT.dir;
+    msgEl.oninput = () => { GIT.msg = msgEl.value; };
+    box.querySelector("#git-all").onchange = (e) => { GIT.sel = e.target.checked ? new Set(s.files.map((f) => f.path)) : new Set(); gitShowChanges(); };
+    box.onclick = async (e) => {
+      const ck = e.target.dataset.ck, op = e.target.closest("[data-open]"), un = e.target.dataset.undo;
+      if (ck != null) {
+        const f = s.files[+ck]; e.target.checked ? GIT.sel.add(f.path) : GIT.sel.delete(f.path);
+        const b = $("git-do"); b.disabled = !GIT.sel.size; b.textContent = t("提交选中的 {n} 个文件", { n: GIT.sel.size });
+        // “全选”框跟着单个勾选走：以前取消一个文件后全选框还是勾着的，再点一次反而清空（196 Git 域第 5 条）
+        const all = $("git-all"); if (all) all.checked = GIT.sel.size === s.files.length;
+        return;
+      }
+      if (op) { GIT.file = s.files[+op.dataset.open].path; GIT.view = { kind: "diff" }; return gitRender(); }
+      if (un != null) {
+        const f = s.files[+un];
+        const q = (f.kind === "new" || f.kind === "added") ? t("{f} 是新文件，撤销就是删掉它。确定？", { f: f.path }) : t("把 {f} 改回上次提交时的样子？这个文件没提交的改动会丢掉。", { f: f.path });
+        if (!confirm(q)) return;
+        try { const r = await gpost("discard", { file: f.path }); toast(r.message || t("已撤销")); gitLoad(); } catch (e2) { toast(e2.message, true); }
+      }
+    };
+    $("git-do").onclick = () => gitCommit();
+    $("git-ask").onclick = () => {
+      const files = [...GIT.sel];
+      closeGit();
+      send(t("请看一下 {root} 里这些文件的改动，写一句简洁的提交说明，然后只提交它们：{files}", { root: GIT.root, files: files.join("、") || t("（全部改动）") }));
+    };
+  }
+
+  async function gitShowBranches() {
+    const box = $("git-body");
+    box.innerHTML = `<div class="vw-empty">${t("读取中…")}</div>`;
+    let r;
+    const ok = latest("gitbody");
+    try { r = await gapi("branches"); } catch (e) { if (ok()) box.innerHTML = `<div class="vw-empty">${esc(e.message)}</div>`; return; }
+    if (!ok() || GIT.tab !== "branches") return;
+    const row = (b, remote) => `<div class="git-row gbr${b.current ? " cur" : ""}" data-b="${esc(b.name)}" data-remote="${remote ? 1 : ""}">
+        <span class="gbr-mark">${b.current ? "✓" : ""}</span>
+        <span class="gp">${gbdi(b.name)}<span class="tiny gbr-sub">${esc(b.subject || "")}</span></span>
+        ${b.gone ? `<span class="badge warn">${t("远端已删")}</span>` : ""}
+        ${b.ahead ? `<span class="badge">↑${b.ahead}</span>` : ""}${b.behind ? `<span class="badge">↓${b.behind}</span>` : ""}
+        <span class="tiny">${relTime(b.at)}</span>
+        ${b.current ? "" : `<button class="btn ghost sm" data-sw="1">${remote ? t("检出") : t("切换")}</button>`}
+      </div>`;
+    box.innerHTML = `<div class="git-new row-actions">
+        <input id="git-newbr" placeholder="${esc(t("新分支名，如 fix/login"))}" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="btn sm" id="git-newbr-ok">${t("新建并切过去")}</button></div>
+      <div class="tiny">${t("新分支从当前提交开始；没提交的改动会跟着带过去。")}</div>
+      <div class="git-sec">${t("本地分支")}</div>${[...r.local].sort((x, y) => (y.current ? 1 : 0) - (x.current ? 1 : 0)).map((b) => row(b, false)).join("") || `<div class="tiny">${t("还没有提交，所以也还没有分支。")}</div>`}
+      ${r.remote.length ? `<div class="git-sec">${t("只在远端的分支")}</div>${r.remote.map((b) => row(b, true)).join("")}` : ""}
+      ${r.remotes.length ? "" : `<div class="tiny">${t("这个仓库还没有设置远端（remote），推送和拉取用不了。")}</div>`}`;
+    const sw = async (name, create) => {
+      try { const x = await gpost("switch", { branch: name, create }); toast(x.message || t("已切换")); }
+      catch (e) { return toast(e.message, true); }
+      GIT.known = null; GIT.sel = new Set();
+      await gitLoad();
+    };
+    box.onclick = (e) => {
+      const b = e.target.closest("[data-sw]"); if (!b) return;
+      const rowEl = b.closest(".gbr");
+      sw(rowEl.dataset.b, false);
+    };
+    $("git-newbr-ok").onclick = () => {
+      const n = $("git-newbr").value.trim();
+      if (!n) { toast(t("填一个分支名"), true); return $("git-newbr").focus(); }
+      sw(n, true);
+    };
+    $("git-newbr").onkeydown = (e) => { if (e.key === "Enter") $("git-newbr-ok").click(); };
+  }
+
+  async function gitCommit(again) {
+    const msg = ($("git-msg")?.value || "").trim();
+    if (!msg) { toast(t("写一句提交说明"), true); $("git-msg")?.focus(); return; }
+    // 一律按勾选清单传：以前「全选」发 files:null，网关 add -A 把状态快照之后新冒出来的文件、子模块指针也一起提交了
+    // （0.6.10 审计 195-S.1）。列表截断时也是清单的子集，没显示的本来就不该跟着提交（#106 07-002）
+    // 提交在途时面板可能已换到别的仓库：回执只收拾发起它的那个仓库，别清掉另一个仓库正在写的说明（#154-1）
+    const dir = GIT.dir;
+    try {
+      const r = await gpost("commit", { message: msg, files: [...GIT.sel] });
+      toast(r.message || t("已提交"));
+      if (GIT.dir !== dir) return;
+      GIT.sel = new Set(); GIT.known = null;
+      // 等的时候又改了说明（准备下一次提交）的，留着
+      const box = $("git-msg");
+      if (!box || box.value.trim() === msg) { GIT.msg = ""; if (box) box.value = ""; }
+      gitLoad();
+    } catch (e) {
+      if (GIT.dir !== dir) return toast(e.message, true);
+      // 只有「还没设置署名」才弹身份表单；冲突、合并中不能只提交一部分之类也是 409，要直接说清楚（195-S.2）
+      if (e.status === 409 && e.body && e.body.error === "no_identity" && !again) return gitAskIdentity();
+      toast(e.message, true);
+    }
+  }
+  /** 第一次提交：git 要知道署名。填一次，存进全局配置 */
+  function gitAskIdentity() {
+    const box = $("git-id"); box.classList.remove("hidden");
+    box.innerHTML = `<div class="tiny">${t("第一次提交要先告诉 git 你的名字和邮箱（写进提交记录，存在本机）。")}</div>
+      <input id="git-id-name" placeholder="${esc(t("名字"))}" autocomplete="off"><input id="git-id-mail" placeholder="${esc(t("邮箱"))}" autocomplete="off" inputmode="email">
+      <button class="btn sm" id="git-id-ok">${t("保存并提交")}</button>`;
+    $("git-id-ok").onclick = async () => {
+      try { await gpost("identity", { name: $("git-id-name").value, email: $("git-id-mail").value }); }
+      catch (e) { return toast(e.message, true); }
+      box.classList.add("hidden");
+      gitCommit(true);
+    };
+  }
+
+  /** 统一 diff → 带行号的红绿行。合并提交的 diff --cc（两列 +/-）也认（11-04 报告 三） */
+  function diffHtml(text) {
+    if (!text.trim()) return `<div class="tiny">${t("没有差异")}</div>`;
+    const out = []; let o = 0, n = 0, open = false, inHunk = false, cols = 1;
+    const close = () => { if (open) out.push("</div>"); open = false; };
+    for (const line of text.split("\n")) {
+      const fh = line.match(/^diff --(?:git a\/.+ b\/(.+)|cc (.+)|combined (.+))$/);
+      if (fh) {
+        close();
+        out.push(`<div class="gdiff${GIT.wrap ? "" : " nowrap"}"><div class="fh">${esc(fh[1] || fh[2] || fh[3])}</div>`); open = true;
+        inHunk = false; cols = line.startsWith("diff --git ") ? 1 : 2;
+        continue;
+      }
+      if (!open) { out.push(`<div class="gdiff${GIT.wrap ? "" : " nowrap"}">`); open = true; }
+      // 文件头只在头部认：进了块以后，删掉的「-- 注释」是「--- …」、加上的「++ x」是「+++ …」，都是正文
+      if (!inHunk && /^(index |--- |\+\+\+ |new file|deleted file|similarity|dissimilarity|rename |copy |old mode|new mode|mode )/.test(line)) {
+        if (/^(new file|deleted file|rename )/.test(line)) out.push(`<div class="ln meta"><span class="no"></span><span class="tx">${esc(line)}</span></div>`);
+        continue;
+      }
+      if (!inHunk && line.startsWith("Binary files")) { out.push(`<div class="ln meta"><span class="no"></span><span class="tx">${t("二进制文件，无法逐行对比")}</span></div>`); continue; }
+      const h = cols === 1 ? line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/) : line.match(/^@@@ -(\d+)(?:,\d+)? -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@@(.*)$/);
+      if (h) { o = +h[1]; n = +h[2]; inHunk = true; out.push(`<div class="ln hunk"><span class="no">⋯</span><span class="tx">${esc(h[3].trim() || "")}</span></div>`); continue; }
+      if (!inHunk) continue;
+      if (line.startsWith("\\")) continue;      // \ No newline at end of file
+      const pre = line.slice(0, cols), body = esc(line.slice(cols)) || " ";
+      if (pre.includes("+")) out.push(`<div class="ln add"><span class="no">${n++}</span><span class="tx">${body}</span></div>`);
+      else if (pre.includes("-")) out.push(`<div class="ln del"><span class="no">${o++}</span><span class="tx">${body}</span></div>`);
+      else if (pre.trim() === "" && pre.length === cols) { out.push(`<div class="ln"><span class="no">${n}</span><span class="tx">${body}</span></div>`); o++; n++; }
+    }
+    close();
+    return out.join("");
+  }
+
+  async function gitShowDiff(file, commit) {
+    const box = $("git-body");
+    const back = commit ? t("← 返回这次提交") : t("← 返回改动列表");
+    box.innerHTML = `<div class="row-actions git-back"><button class="btn ghost sm" data-a="back">${back}</button>
+      <button class="btn ghost sm" data-a="wrap">${t("换行")}</button>
+      ${!commit && file ? `<button class="btn ghost sm" data-a="hist">${t("这个文件的历史")}</button>` : ""}
+      ${!commit && file && GIT.status?.files.some((f) => f.path === file) ? `<button class="btn ghost sm" data-a="undo">${t("撤销")}</button>` : ""}</div>
+      <div id="git-diff"><div class="tiny">${t("读取中…")}</div></div>`;
+    box.querySelector(".git-back").onclick = async (e) => {
+      const a = e.target.dataset.a; if (!a) return;
+      if (a === "back") { GIT.view = commit ? { kind: "commit", commit } : null; if (!commit) GIT.file = ""; return gitRender(); }
+      if (a === "wrap") { GIT.wrap = !GIT.wrap; box.querySelectorAll(".gdiff").forEach((d) => d.classList.toggle("nowrap", !GIT.wrap)); return; }
+      if (a === "hist") { GIT.tab = "history"; GIT.view = null; return gitRender(); }
+      if (a === "undo") {
+        const f = GIT.status.files.find((x) => x.path === file);
+        if (!confirm(f && (f.kind === "new" || f.kind === "added") ? t("{f} 是新文件，撤销就是删掉它。确定？", { f: file }) : t("把 {f} 改回上次提交时的样子？这个文件没提交的改动会丢掉。", { f: file }))) return;
+        try { await gpost("discard", { file }); toast(t("已撤销")); GIT.view = null; GIT.file = ""; gitLoad(); } catch (e2) { toast(e2.message, true); }
+      }
+    };
+    const ok = latest("gitbody");
+    try {
+      const r = await gapi("diff", { file: file || "", commit: commit || "" });
+      if (ok()) $("git-diff").innerHTML = diffHtml(r.diff) + (r.truncated ? `<div class="tiny">${t("改动太多，只显示了前一部分")}</div>` : "");
+    } catch (e) { if (ok()) $("git-diff").innerHTML = `<div class="tiny">${esc(e.message)}</div>`; }
+  }
+
+  async function gitShowLog(file, append) {
+    const box = $("git-body");
+    if (!append) { GIT.log = []; box.innerHTML = `<div class="tiny">${t("读取中…")}</div>`; }
+    let r;
+    const ok = latest("gitbody");
+    try { r = await gapi("log", { n: 50, skip: GIT.log.length, file: file || "" }); } catch (e) { if (ok()) box.innerHTML = `<div class="vw-empty">${esc(e.message)}</div>`; return; }
+    if (!ok()) return;
+    GIT.log = GIT.log.concat(r.commits || []);
+    if (!GIT.log.length) { box.innerHTML = `<div class="vw-empty">${t("还没有提交记录。")}</div>`; return; }
+    box.innerHTML = (file ? `<div class="row-actions git-back"><span class="tiny">${esc(t("只看 {f} 的历史", { f: file }))}</span>
+        <button class="btn ghost sm" data-a="all">${t("看全部")}</button></div>` : "") +
+      `<div class="git-log">${GIT.log.map((c, i) => `<div class="git-row" data-c="${i}">
+        <span class="subj">${(c.refs ? c.refs.split(", ").map((x) => `<span class="git-ref">${esc(x.replace(/^HEAD -> /, ""))}</span>`).join("") : "")}${esc(c.subject)}</span>
+        <span class="meta mono">${esc(c.short)} · ${esc(c.author)} · ${esc(relTime(c.at))}</span></div>`).join("")}</div>` +
+      (r.more ? `<div class="row-actions"><button class="btn ghost sm" data-a="more">${t("加载更多")}</button></div>` : "");
+    box.onclick = (e) => {
+      const a = e.target.dataset && e.target.dataset.a;
+      if (a === "all") { GIT.file = ""; return gitShowLog(""); }
+      if (a === "more") return gitShowLog(file, true);
+      const row = e.target.closest("[data-c]");
+      if (row) { GIT.view = { kind: "commit", commit: GIT.log[+row.dataset.c].hash }; gitRender(); }
+    };
+  }
+
+  async function gitShowCommit(hash) {
+    const box = $("git-body");
+    box.onclick = null;
+    box.innerHTML = `<div class="tiny">${t("读取中…")}</div>`;
+    let c;
+    const ok = latest("gitbody");
+    try { c = await gapi("show", { commit: hash }); } catch (e) { if (ok()) box.innerHTML = `<div class="vw-empty">${esc(e.message)}</div>`; return; }
+    if (!ok()) return;
+    // 回执缺 message / files 时 split / map 会抛错，整个详情面板停在「读取中…」（196 前端注入域）
+    const cmsg = typeof c.message === "string" ? c.message : "";
+    const cfiles = Array.isArray(c.files) ? c.files : [];
+    box.innerHTML = `<div class="row-actions git-back"><button class="btn ghost sm" data-a="back">${t("← 返回历史")}</button>
+        <button class="btn ghost sm" data-a="all">${t("看整次提交的对比")}</button></div>
+      <div class="prov-state"><b>${esc(cmsg.split("\n")[0])}</b>${cmsg.includes("\n") ? `<pre class="tiny" style="white-space:pre-wrap;margin:4px 0 0">${esc(cmsg.split("\n").slice(1).join("\n").trim())}</pre>` : ""}
+        <div class="tiny mono">${esc(String(c.hash || "").slice(0, 12))} · ${esc(c.author || "")} · ${esc(new Date(c.at).toLocaleString())}</div></div>
+      ${cfiles.map((f, i) => `<div class="git-row" data-f="${i}" style="cursor:pointer">
+        <span class="gs gs-${{ M: "modified", A: "added", D: "deleted", R: "renamed" }[f.status] || "modified"}">${esc(f.status || "")}</span>
+        <span class="gp">${gbdi(f.orig ? f.orig + " → " + f.path : f.path)}</span>${gnum(f)}</div>`).join("")}`;
+    box.onclick = (e) => {
+      const a = e.target.dataset && e.target.dataset.a;
+      if (a === "back") { GIT.view = null; return gitRender(); }
+      if (a === "all") { GIT.file = ""; GIT.view = { kind: "diff", commit: hash }; return gitRender(); }
+      const row = e.target.closest("[data-f]");
+      if (row) { GIT.file = cfiles[+row.dataset.f].path; GIT.view = { kind: "diff", commit: hash }; gitRender(); }
+    };
+  }
+
+  /** 文件面板：给改过的文件标个色点（不是仓库就什么都不做） */
+  let fsDots = null, fsDotsAt = 0;
+  async function fsGitDots() {
+    const dir = state.fs.path;
+    let s;
+    // 选中、过滤都会重画列表：同一目录 5 秒内复用上次的结果，别每点一下就跑一次 git status
+    if (fsDots && fsDots.dir === dir && Date.now() - fsDotsAt < 5000) s = fsDots.s;
+    else {
+      try { s = await api(`/api/git/status?dir=${encodeURIComponent(dir)}`); } catch { return; }
+      fsDots = { dir, s }; fsDotsAt = Date.now();
+    }
+    if (!s || s.notRepo || s.error || dir !== state.fs.path) return;
+    const rel = dir.replace(/\/$/, "");
+    const here = path => { const full = s.root + "/" + path; return full.startsWith(rel + "/") ? full.slice(rel.length + 1) : null; };
+    const mark = new Map();
+    for (const f of s.files) {
+      const r = here(f.path); if (r == null) continue;
+      const top = r.split("/")[0];
+      if (!mark.has(top)) mark.set(top, r.includes("/") ? "modified" : f.kind);
+    }
+    $("fs-list").querySelectorAll(".fs-item").forEach((el) => {
+      const e = fsVisible()[Number(el.dataset.i)];
+      const k = e && mark.get(e.name);
+      if (k && !el.querySelector(".fs-git-dot")) el.querySelector(".it-title").insertAdjacentHTML("afterend", `<span class="fs-git-dot ${k}" title="${esc(gsTitle(k))}"></span>`);
+    });
+  }
+
+  const viewerEl = $("viewer");
+  const VW = {
+    path: "", kind: "", size: 0, mode: "", text: "", mtime: 0, dirty: false,
+    pdf: null, pdfObs: null, zoom: 1, wrap: localStorage.getItem("cc.vw.wrap") !== "0",
+  };
+  const VW_EDIT_MAX = 16 * 1024 * 1024;
+  // 明摆着是二进制的扩展名：不给「当作文本打开」（11MB 的 APK 解成一千多万字塞进编辑框，主线程卡死，群反馈 11-03）
+  const VW_BIN_EXT = /\.(apk|apks|aab|xapk|zip|jar|aar|dex|class|so|o|a|ko|exe|dll|bin|img|iso|gz|tgz|xz|zst|bz2|7z|rar|tar|deb|rpm|db|sqlite3?|wasm|ttf|otf|woff2?|mp[34]|m4a|aac|flac|opus|ogg|wav|webm|mkv|mov|avi|png|jpe?g|gif|webp)$/i;   // 几百万字的长稿也要能开；预览分段渲染、字数增量统计
+  const isMd = (p) => /\.(md|markdown|mdx)$/i.test(p);
+  const isHtml = (p) => /\.html?$/i.test(p);
+
+  async function openViewer(path, kind, size) {
+    if (VW.dirty && !confirm(t("有未保存的修改，丢弃？"))) return;
+    if (VW.dirty) draftClear();
+    closeViewerPdf();
+    vwDropEd();
+    vwMdStop();          // 换文件：上一份的分段预览 observer、行号栏状态都别再留着（FIND-026）
+    gutStop();
+    vwHtmlStop();
+    Object.assign(VW, { path, kind: kind || "other", size: size || 0, text: "", mtime: 0, dirty: false, saving: false, zoom: 1, git: null, gitInfo: "", gitMarks: null, plainMd: false, wb: null, sheets: null, ready: false, eol: "" });
+    // 换了文档就换代：上一个文档还在途的读取、转换、保存回执一律作废（审查 C-001、04-F04、04-F05）
+    VW.gen = (VW.gen || 0) + 1;
+    vwActs([]);    // 上一个文档的「保存」先撤掉：读取中点它会把空正文存进新文件（私下反馈 10-29）
+    $("vw-name").textContent = path.split("/").pop();
+    $("vw-name").title = path;
+    $("vw-info").textContent = fmtSize(VW.size);
+    MO.cancel(viewerEl); viewerEl.classList.remove("hidden"); window.CCLayout && CCLayout.raise("viewer");   // 被文件盖着时再开别的文件也要提上来（审查 UI05-001）
+    if (VW.kind === "text" && isHtml(path) && localStorage.getItem("cc.vw.htmlmode") !== "edit") return vwHtml();
+    if (VW.kind === "text") return vwLoadText(isMd(path) ? (localStorage.getItem("cc.vw.mdmode") === "edit" ? "edit" : "md") : "edit");
+    if (VW.kind === "image") return vwImage();
+    if (VW.kind === "pdf") return vwPdf();
+    if (VW.kind === "docx") return vwDocx();
+    if (VW.kind === "sheet") return vwSheet();
+    if (VW.kind === "video" || VW.kind === "audio") {
+      vwActs([]);
+      const tag = VW.kind === "video" ? "video" : "audio";
+      $("vw-body").innerHTML = `<div class="vw-media"><${tag} src="${fileUrl(path)}" controls autoplay></${tag}></div>`;
+      // 读不出来（格式不支持、文件没了、解码失败）时别只给一块空白：换成失败说明和分享入口（稳定性报告 FIND-025）
+      $("vw-body").querySelector("video,audio")?.addEventListener("error", () => {
+        if (VW.path !== path || viewerEl.classList.contains("hidden")) return;
+        vwFail(t("读取失败"));
+      });
+      return;
+    }
+    vwActs([]);
+    $("vw-body").innerHTML = `<div class="vw-empty">
+      <div>${t("这种文件没有内置预览。")}</div>
+      ${VW.size <= VW_EDIT_MAX && !VW_BIN_EXT.test(path) ? `<button class="btn ghost sm" data-a="astext">${t("当作文本打开")}</button>` : ""}
+      <button class="btn ghost sm" data-a="share">${dlIco()}${t("下载")}</button></div>`;
+    $("vw-body").querySelector('[data-a="astext"]')?.addEventListener("click", () => { VW.kind = "text"; vwLoadText("edit"); });
+  }
+
+  /** 顶栏右侧的按钮：[文字, 动作, 是否高亮] */
+  function vwActs(list) {
+    const base = [[t("插入 @路径"), "insert"]];
+    $("vw-acts").innerHTML = list.concat(base).map(([l, a, on]) =>
+      `<button class="btn ${on ? "" : "ghost"} sm" data-a="${a}">${esc(l)}</button>`).join("") +
+      `<button class="btn ghost sm vw-ico" data-a="share" title="${esc(t("下载"))}" aria-label="${esc(t("下载"))}">${dlIco()}</button>`;
+  }
+
+  // 预览不了 / 转换失败时正文里的「分享」按钮
+  $("vw-body").addEventListener("click", (e) => {
+    if (e.target.closest('.vw-empty [data-a="share"]')) downloadFile(VW.path);
+  });
+  $("vw-acts").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-a]");
+    if (!b) return;
+    const a = b.dataset.a;
+    if (a === "insert") {
+      insertAtCursor("@" + VW.path);
+      toast(t("已插入文件路径"));
+      return closeViewer();
+    }
+    if (a === "share") return downloadFile(VW.path);
+    if (a === "save") return vwSave(false);
+    if (a === "md") { VW.text = vwText(); if (isMd(VW.path)) localStorage.setItem("cc.vw.mdmode", "md"); return vwRenderText("md"); }
+    if (a === "edit" && VW.mode === "html") {
+      // 从预览切回源码：预览期间文件可能被 Claude 改过，重新读
+      localStorage.setItem("cc.vw.htmlmode", "edit");
+      vwHtmlStop();
+      return vwLoadText("edit");
+    }
+    if (a === "edit") { if (isMd(VW.path) && VW.mode === "md") localStorage.setItem("cc.vw.mdmode", "edit"); return vwRenderText("edit"); }
+    if (a === "html") {
+      if (VW.dirty) {
+        if (!confirm(t("预览显示的是磁盘上的文件。先保存你的修改再预览？"))) return;
+        return vwSave(false).then(() => { if (!VW.dirty) { localStorage.setItem("cc.vw.htmlmode", "html"); vwHtml(); } });
+      }
+      localStorage.setItem("cc.vw.htmlmode", "html");
+      return vwHtml();
+    }
+    if (a === "reload") return vwHtmlReload();
+    if (a === "pvnet") return pvSetNet(!(VW.pv && VW.pv.net));
+    if (a === "pick") {
+      const fr = $("vw-body").querySelector(".vw-html"); if (!fr || !fr.contentWindow) return;
+      VW.picking = !VW.picking; vwRenderActs();
+      fr.contentWindow.postMessage({ cc: VW.picking ? "pick" : "pickoff" }, new URL(VW.pv.url, location.href).origin);
+      if (VW.picking) toast(t("点一下网页里的某一块，它就会放进输入框"));
+      return;
+    }
+    if (a === "devtools") { VW.picking = false; try { localStorage.setItem("cc.pvDevtools", pvDevtools() ? "0" : "1"); } catch {} vwRenderActs(); return vwHtmlReload(); }
+    if (a === "openweb") {
+      if (!VW.pv) return;
+      // 浏览器里没有查看器那层「不联网」拦截（整页跳外站拦不住），也没有 App 壳的网络拦截：
+      // 开没开联网都先问一句（10-31 复核；11-01 独立审查低-9）
+      if (!confirm(t("在浏览器里打开就没有查看器的保护了：网页里的脚本能把它所在文件夹里的文件发到别处，也能访问本机上的其他服务。只对你信得过的网页这样做。"))) return;
+      openWeb(VW.pv.url);
+      return;
+    }
+    if (a === "gitdiff") return vwShowDiff();
+    if (a === "githist") return openGit(VW.path, { file: VW.git.rel, tab: "history" });
+    if (a === "wrap") {
+      VW.wrap = !VW.wrap;
+      localStorage.setItem("cc.vw.wrap", VW.wrap ? "1" : "0");
+      $("vw-text")?.classList.toggle("nowrap", !VW.wrap);
+      gutSchedule();
+      return vwRenderActs();
+    }
+    if (a === "zoom-" || a === "zoom+") {
+      VW.zoom = Math.max(0.5, Math.min(4, VW.zoom * (a === "zoom+" ? 1.25 : 0.8)));
+      return vwPdfRelayout();
+    }
+  });
+
+  /** 按字节认编码（审查 B06）：以前一律当 UTF-8 读，UTF-16 / GBK 的字节变成替代字符，保存时连原文一起写坏；UTF-8 的 BOM 也会丢。
+   *  enc 非空 = 不是 UTF-8：照它解出来给人看，但只读 —— 浏览器只会编 UTF-8，存回去必然有损 */
+  /** 看着像二进制：前 64KB 里有 NUL，或控制字符超过一成（日志里的 ANSI 颜色占不到这么多）。带 UTF-16 BOM 的本来就有 NUL，不算 */
+  function vwLooksBinary(b) {
+    if ((b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff)) return false;
+    const n = Math.min(b.length, 65536);
+    let ctl = 0;
+    for (let i = 0; i < n; i++) { const c = b[i]; if (c === 0) return true; if (c < 9 || (c > 13 && c < 32)) ctl++; }
+    return n > 0 && ctl / n > 0.1;
+  }
+  function vwDecode(b) {
+    if (b[0] === 0xff && b[1] === 0xfe) return { text: new TextDecoder("utf-16le").decode(b), enc: "UTF-16LE", bom: false };
+    if (b[0] === 0xfe && b[1] === 0xff) return { text: new TextDecoder("utf-16be").decode(b), enc: "UTF-16BE", bom: false };
+    const bom = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
+    try { return { text: new TextDecoder("utf-8", { fatal: true }).decode(b), enc: "", bom }; }
+    catch {
+      try { return { text: new TextDecoder("gb18030", { fatal: true }).decode(b), enc: "GBK", bom: false }; }
+      catch { return { text: new TextDecoder("utf-8").decode(b), enc: t("非 UTF-8"), bom: false }; }
+    }
+  }
+  function vwText() { if (VW.ed) return VW.ed.getText(); const ta = $("vw-text"); return ta ? ta.value : VW.text; }
+  function vwDropEd() { if (VW.ed) { try { VW.ed.destroy(); } catch {} VW.ed = null; } }
+
+  /** 顶栏小字：大小 · git 状态 · 字数（md 编辑时） */
+  function vwInfo() {
+    let s = fmtSize(VW.size) + (VW.enc ? " · " + VW.enc + " · " + t("只读") : "") + (VW.gitInfo || "");
+    if (VW.ed) {
+      const w = VW.ed.words();
+      s += " · " + (w == null ? t("统计字数…") : t("{n} 字", { n: w.toLocaleString() }));
+      const sel = VW.ed.selWords();
+      if (sel) s += " · " + t("选中 {n} 字", { n: sel.toLocaleString() });
+    }
+    $("vw-info").textContent = s;
+  }
+
+  // 草稿：没保存的修改每隔一会儿存进 IndexedDB（localStorage 只有几 MB，长稿放不下），
+  // 应用被杀、WebView 重载也不丢；保存或放弃后清掉。0.4.4 之前存在 localStorage 的旧草稿照样能恢复
+  const draftKey = () => "cc.draft:" + VW.path;
+  let draftDb = null;
+  function draftIdb(mode, fn) {
+    draftDb = draftDb || new Promise((ok, no) => {
+      const r = indexedDB.open("cc-drafts", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("d");
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => { draftDb = null; no(r.error); };
+    });
+    return draftDb.then((db) => new Promise((ok, no) => {
+      const tx = db.transaction("d", mode), q = fn(tx.objectStore("d"));
+      tx.oncomplete = () => ok(q && q.result);
+      tx.onerror = tx.onabort = () => no(tx.error);
+    }));
+  }
+  function draftSave() {
+    clearTimeout(VW.dt);
+    const key = draftKey();   // 排的时候就定下是哪个文件：800ms 里换了文件，就别把正文存到新文件名下（DeepSeek 复核 低-4）
+    VW.dt = setTimeout(() => {
+      if (!VW.dirty || draftKey() !== key) return;
+      const d = { at: Date.now(), text: vwText() };
+      draftIdb("readwrite", (os) => os.put(d, key)).catch(() => {
+        if (d.text.length <= 1024 * 1024) try { localStorage.setItem(key, JSON.stringify(d)); } catch {}
+      });
+    }, 800);
+  }
+  // key 由调用方带进来：读草稿是异步的，读完时 VW.path 可能已经换成别的文件，不能再按当前路径算（#106 07-009）
+  function draftClear(key = draftKey()) {
+    clearTimeout(VW.dt);
+    try { localStorage.removeItem(key); } catch {}
+    draftIdb("readwrite", (os) => os.delete(key)).catch(() => {});
+  }
+  async function draftTake(gen) {
+    const key = draftKey();
+    let d = null;
+    try { d = await draftIdb("readonly", (os) => os.get(key)); } catch {}
+    if (gen !== VW.gen) return null;                 // 读的时候换了文件：别弹旧文件的提示，更别动草稿
+    if (!d) try { d = JSON.parse(localStorage.getItem(key) || "null"); } catch {}
+    if (!d || typeof d.text !== "string") return null;
+    if (d.text === VW.text) { draftClear(key); return null; }
+    if (confirm(t("上次有没保存的修改（{time}），要恢复吗？\n确定：恢复\n取消：丢掉草稿", { time: new Date(d.at).toLocaleString() }))) return d.text;
+    draftClear(key);
+    return null;
+  }
+
+  async function vwLoadText(mode) {
+    if (VW.size > VW_EDIT_MAX) {
+      vwActs([]);
+      // 说“只能下载查看”却没有下载入口；给一个（195-C.10）
+      $("vw-body").innerHTML = `<div class="vw-empty"><div>${t("文件太大（{size}），只能下载查看。", { size: fmtSize(VW.size) })}</div>
+        <a class="btn ghost sm" href="${fileUrl(VW.path, true)}" download>⤓ ${t("下载")}</a>
+        <button class="btn ghost sm" data-a="share">${dlIco()}${t("下载")}</button></div>`;
+      return;
+    }
+    $("vw-body").innerHTML = `<div class="vw-empty">${t("读取中…")}</div>`;
+    const gen = VW.gen;
+    VW.ready = false;
+    let dec, mtime;
+    try {
+      const r = await fetch(fileUrl(VW.path));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      mtime = Number(r.headers.get("x-mtime")) || 0;
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      // 二进制当文本解码会卡死界面（扩展名没认出来的也在这里拦）
+      if (vwLooksBinary(bytes)) {
+        if (gen === VW.gen) { vwActs([]); $("vw-body").innerHTML = `<div class="vw-empty"><div>${t("这是二进制文件，当作文本打开会把界面卡住。")}</div><button class="btn ghost sm" data-a="share">${dlIco()}${t("下载")}</button></div>`; }
+        return;
+      }
+      dec = vwDecode(bytes);
+    } catch (e) {
+      if (gen === VW.gen) $("vw-body").innerHTML = `<div class="vw-empty">${t("读取失败")}: ${esc(e.message)}</div>`;
+      return;
+    }
+    if (gen !== VW.gen) return;
+    // 编码、BOM 和正文一起认：以前编码在世代检查之前就写进 VW，迟到的旧文件回执能把当前文件的只读保护摘掉（#106 07-001）
+    VW.enc = dec.enc; VW.bom = dec.bom;
+    // 纯 CRLF 的文件记下来，保存时按原样写回（textarea 的 value 里只剩 \n）（195-C.4）
+    const lf = (dec.text.match(/\n/g) || []).length;
+    VW.eol = lf && (dec.text.match(/\r\n/g) || []).length === lf ? "\r\n" : "";
+    VW.mtime = mtime; VW.text = dec.text;
+    VW.dirty = false;
+    const draft = await draftTake(gen);
+    if (gen !== VW.gen) return;
+    if (draft != null) { VW.text = draft; VW.dirty = true; mode = "edit"; }
+    VW.ready = true;
+    vwRenderText(mode);
+    vwGitCheck();
+  }
+
+  function vwRenderActs() {
+    const acts = [];
+    if (isMd(VW.path)) acts.push(VW.mode === "md" ? [t("编辑"), "edit"] : [t("预览"), "md"]);
+    if (isHtml(VW.path)) {
+      if (VW.mode === "html") { vwActs([[t("源码"), "edit"], [t("刷新"), "reload"], [VW.pv && VW.pv.blocked && !VW.pv.net ? t("联网") + " •" : t("联网"), "pvnet", !!(VW.pv && VW.pv.net)], [t("开发者工具"), "devtools", pvDevtools()], ...(pvDevtools() ? [[t("选取元素"), "pick", VW.picking]] : []), [t("在浏览器打开"), "openweb"]]); return; }
+      acts.push([t("预览"), "html"]);
+    }
+    if (VW.mode === "edit") {
+      if (!isMd(VW.path)) acts.push([t("换行"), "wrap", VW.wrap]);
+      acts.push([VW.dirty ? t("保存") + " •" : t("保存"), "save", VW.dirty]);
+    }
+    // 在 git 仓库里：改过就给「对比」（和上次提交比，红删绿增），随时可看这个文件的历史
+    if (VW.git && VW.git.root) {
+      if (VW.mode === "diff") acts.unshift([t("编辑"), "edit"]);
+      else if (VW.git.kind) acts.push([t("对比"), "gitdiff"]);
+      acts.push([t("历史"), "githist"]);
+    }
+    vwActs(acts);
+  }
+
+  /** 这个文件在不在 git 仓库里、改没改（编辑器顶栏显示「已修改 +3 −1」） */
+  async function vwGitCheck() {
+    const p = VW.path;
+    VW.git = null;
+    VW.gitMarks = null;   // 先清：下面哪条路提前走了，都不能留着上一个文件的行号标记（#177-6）
+    let s;
+    try { s = await api("/api/git/status?dir=" + encodeURIComponent(p)); } catch { return; }
+    if (p !== VW.path || !s || s.notRepo || s.error) return;
+    const real = p;
+    const rel = real.startsWith(s.root + "/") ? real.slice(s.root.length + 1) : null;
+    if (rel == null) return;
+    const f = s.files.find((x) => x.path === rel);
+    VW.git = { root: s.root, rel, kind: f ? f.kind : "", add: f ? f.add : 0, del: f ? f.del : 0 };
+    VW.gitInfo = f ? " · " + gsTitle(f.kind) + (f.add != null ? ` +${f.add} −${f.del ?? 0}` : "") : " · " + t("和上次提交一样");
+    vwInfo();
+    vwRenderActs();
+    VW.gitMarks = null;
+    if (f && (f.kind === "modified" || f.kind === "renamed") && !f.binary) {
+      try {
+        const r = await api("/api/git/diff?" + new URLSearchParams({ dir: p, file: p }));
+        if (p === VW.path) { VW.gitMarks = gutMarks(r.diff); gutSchedule(); }
+      } catch {}
+    } else gutSchedule();
+  }
+
+  // ── 编辑器行号 + git 改动标记 ──
+  // 纯 textarea 没有行号：左边一列跟着滚动。自动换行时一行可能占好几行高，用一个看不见的镜像层量出每行的实际位置。
+  // 标记对的是磁盘上的版本和上次提交（没保存的修改不算，存完重新算）：绿 = 新加的行，蓝 = 改过的行，红三角 = 这里删过东西。
+  const GUT_MAX = 20000;                // 再长的文件不画行号，免得量一次卡半天
+  let gutTimer = 0, gutRO = null, gutRaf = 0;
+  // 量过的每行高度：一行折成几行只看这行的字和宽度，没改的行直接沿用（#74：以前每停一次打字就把全文件重量重画）
+  let gutM = null;   // { key, lines, hs, tops, r0, r1 }
+  /** 统一 diff → Map(新文件行号 → { type, old:[原来的行] }) */
+  function gutMarks(diff) {
+    const m = new Map();
+    let n = 0, dels = [], adds = [], inHunk = false;
+    const flush = () => {
+      if (adds.length) adds.forEach((ln, i) => m.set(ln, { type: dels.length ? "mod" : "add", old: i === 0 ? dels : null, first: i === 0 }));
+      else if (dels.length) m.set(n, { type: "del", old: dels });
+      dels = []; adds = [];
+    };
+    for (const line of String(diff || "").split("\n")) {
+      // 只在 hunk 里认正文。以前用 /^(---|\+\+\+) / 排除文件头，正文里以 "-- " / "++ " 开头的行
+      // 会被当成文件头跳过，后面的行号整体偏移（196 Git 域第 8 条）
+      if (line.startsWith("diff --git ") || line.startsWith("diff --cc ") || line.startsWith("diff --combined ")) {
+        flush(); inHunk = false; continue;
+      }
+      const h = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (h) { flush(); n = +h[1]; inHunk = true; continue; }
+      if (!inHunk || line.startsWith("\\")) continue;
+      if (line[0] === "-") { if (adds.length) flush(); dels.push(line.slice(1)); }
+      else if (line[0] === "+") { adds.push(n++); }
+      else if (line[0] === " ") { flush(); n++; }
+    }
+    flush();
+    // 一段修改的所有行共用第一行记下的原文，点哪一行都能看到
+    let last = null;
+    for (const [ln, v] of [...m.entries()].sort((a, b) => a[0] - b[0])) { if (v.first) last = v; else if (v.type === "mod" && !v.old && last) v.old = last.old; }
+    return m;
+  }
+  function gutAttach(ta) {
+    const gin = ta.parentElement.querySelector(".vw-gut-in");
+    ta.addEventListener("scroll", () => {
+      gin.style.transform = `translateY(${-ta.scrollTop}px)`;
+      if (!gutRaf) gutRaf = requestAnimationFrame(() => { gutRaf = 0; gutPaint(false); });   // 行号只画看得见的一段，滚出去再补
+    }, { passive: true });
+    if (gutRO) gutRO.disconnect();
+    gutRO = new ResizeObserver(() => gutSchedule());
+    gutRO.observe(ta);
+    ta.parentElement.querySelector(".vw-gut").addEventListener("click", (e) => {
+      const mk = e.target.closest(".gm"); if (!mk) return;
+      gutPop(+mk.dataset.ln, mk);
+    });
+    gutSchedule();
+  }
+  function gutSchedule() { clearTimeout(gutTimer); gutTimer = setTimeout(gutDraw, 120); }
+  // 关查看器 / 切版式时把 observer、待画的行号和量过的行文本一起放下（稳定性报告 FIND-026）：
+  // 以前 ResizeObserver 一直盯着已经拆掉的编辑框，几十万行的 lines 也跟着页面挂着
+  function gutStop() {
+    clearTimeout(gutTimer); gutTimer = 0;
+    if (gutRO) { gutRO.disconnect(); gutRO = null; }
+    if (gutRaf) { cancelAnimationFrame(gutRaf); gutRaf = 0; }
+    gutM = null;
+  }
+  function gutDraw() {
+    const ta = $("vw-text"); if (!ta) return;
+    const wrap = ta.parentElement, gut = wrap.querySelector(".vw-gut");
+    if (ta.value.length > 2 * 1024 * 1024) { gut.classList.add("hidden"); gutM = null; return; }
+    const lines = ta.value.split("\n");
+    if (lines.length > GUT_MAX) { gut.classList.add("hidden"); gutM = null; return; }
+    gut.classList.remove("hidden");
+    gut.style.width = (String(lines.length).length * 7.2 + 18) + "px";
+    const cs = getComputedStyle(ta);
+    const key = [ta.clientWidth, cs.padding, cs.font, cs.lineHeight, cs.tabSize, cs.whiteSpace, cs.wordBreak, cs.overflowWrap].join("|");
+    const n = lines.length, hs = new Array(n);
+    // 和上次比：头尾没变的行沿用高度，只量中间改过的那几行
+    let a = 0, b = 0;
+    if (gutM && gutM.key === key) {
+      const old = gutM.lines, m = old.length;
+      while (a < n && a < m && lines[a] === old[a]) { hs[a] = gutM.hs[a]; a++; }
+      while (b < n - a && b < m - a && lines[n - 1 - b] === old[m - 1 - b]) { hs[n - 1 - b] = gutM.hs[m - 1 - b]; b++; }
+    }
+    if (a + b < n) {
+      // 镜像层：和 textarea 同宽同字体同换行规则，只放要量的行
+      const mir = document.createElement("div");
+      mir.className = "vw-mirror mono";
+      mir.style.cssText = `position:absolute;visibility:hidden;left:0;top:0;width:${ta.clientWidth}px;box-sizing:border-box;padding:0 ${cs.paddingRight} 0 ${cs.paddingLeft};font:${cs.font};line-height:${cs.lineHeight};tab-size:${cs.tabSize};white-space:${cs.whiteSpace};word-break:${cs.wordBreak};overflow-wrap:${cs.overflowWrap}`;
+      const frag = document.createDocumentFragment();
+      for (let i = a; i < n - b; i++) { const d = document.createElement("div"); d.textContent = lines[i] || " "; frag.appendChild(d); }
+      mir.appendChild(frag);
+      wrap.appendChild(mir);
+      const kids = mir.children;
+      for (let i = 0; i < kids.length; i++) hs[a + i] = kids[i].offsetHeight;
+      mir.remove();
+    }
+    const tops = new Float64Array(n + 1);
+    tops[0] = parseFloat(cs.paddingTop) || 0;
+    for (let i = 0; i < n; i++) tops[i + 1] = tops[i] + hs[i];
+    gutM = { key, lines, hs, tops, r0: -1, r1: -1 };
+    gutPaint(true);
+  }
+  /** 只画视口上下各多一屏的行号和标记；force：内容变了，整段重画 */
+  function gutPaint(force) {
+    const ta = $("vw-text"), M = gutM; if (!ta || !M) return;
+    const gin = ta.parentElement.querySelector(".vw-gut-in"), n = M.lines.length;
+    const view = ta.clientHeight || 600, y0 = ta.scrollTop - view, y1 = ta.scrollTop + 2 * view;
+    const find = (y) => { let lo = 0, hi = n; while (lo < hi) { const mid = (lo + hi) >> 1; if (M.tops[mid + 1] <= y) lo = mid + 1; else hi = mid; } return lo; };
+    const i0 = Math.min(find(y0), Math.max(0, n - 1)), i1 = Math.min(n - 1, find(y1));
+    // 还在已画的那段里：不用动
+    if (!force && M.r0 >= 0 && find(ta.scrollTop) >= M.r0 && Math.min(find(ta.scrollTop + view), n - 1) <= M.r1) return;   // 贴底时 find 会给 n
+    const marks = VW.gitMarks, lh = parseFloat(getComputedStyle(ta).lineHeight) || 19.5;
+    let html = "";
+    for (let i = i0; i <= i1; i++) {
+      const top = M.tops[i], ln = i + 1, mk = marks && marks.get(ln);
+      html += `<div class="gl" style="top:${top}px;height:${lh}px;line-height:${lh}px">${ln}</div>`;
+      if (mk) html += mk.type === "del"
+        ? `<div class="gm del" data-ln="${ln}" style="top:${top - 4}px" title="${esc(t("这里删掉了 {n} 行", { n: mk.old.length }))}"></div>`
+        : `<div class="gm ${mk.type}" data-ln="${ln}" style="top:${top}px;height:${M.hs[i]}px"></div>`;
+    }
+    // 文件末尾删掉的行：标在最后一行下面
+    if (marks && i1 === n - 1) for (const [ln, mk] of marks) if (ln > n && mk.type === "del")
+      html += `<div class="gm del" data-ln="${ln}" style="top:${M.tops[n] - 4}px"></div>`;
+    gin.innerHTML = html;
+    M.r0 = i0; M.r1 = i1;
+    gin.style.transform = `translateY(${-ta.scrollTop}px)`;
+  }
+  /** 点标记：这一处原来是什么样 */
+  function gutPop(ln, mk) {
+    const v = VW.gitMarks && VW.gitMarks.get(ln); if (!v) return;
+    const wrap = mk.closest(".vw-edwrap");
+    wrap.querySelector(".vw-gpop")?.remove();
+    const pop = document.createElement("div");
+    pop.className = "vw-gpop";
+    const old = v.old || [];
+    pop.innerHTML = `<div class="tiny">${v.type === "add" ? t("第 {n} 行是新加的（上次提交里没有）", { n: ln }) : v.type === "del" ? t("这里删掉了 {n} 行：", { n: old.length }) : t("改过；上次提交时是：")}</div>`
+      + (old.length ? `<pre class="gdel">${esc(old.slice(0, 40).join("\n"))}${old.length > 40 ? "\n…" : ""}</pre>` : "")
+      + `<div class="row-actions"><button class="btn ghost sm" data-a="diff">${t("看整个文件的对比")}</button><button class="btn ghost sm" data-a="x">${t("关闭")}</button></div>`;
+    pop.style.top = Math.max(4, Math.min(wrap.clientHeight - 60, parseFloat(mk.style.top) - $("vw-text").scrollTop + 22)) + "px";
+    pop.onclick = (e) => { const a = e.target.dataset.a; if (a === "x") pop.remove(); if (a === "diff") { pop.remove(); vwShowDiff(); } };
+    wrap.appendChild(pop);
+  }
+
+  async function vwShowDiff() {
+    VW.text = vwText();
+    vwDropEd();
+    VW.mode = "diff";
+    vwRenderActs();
+    $("vw-body").innerHTML = `<div class="vw-diff">${VW.dirty ? `<div class="tiny">${t("还有没保存的修改；这里对比的是磁盘上的版本和上次提交。")}</div>` : ""}<div class="tiny">${t("读取中…")}</div></div>`;
+    // 只认最后一次点的对比：慢的旧回执（别的文件、或同一文件早先那次）不许盖掉现在的（#106 07-006）
+    const my = VW.diffSeq = (VW.diffSeq || 0) + 1, gen = VW.gen, p = VW.path;
+    const box = () => my === VW.diffSeq && gen === VW.gen && p === VW.path && VW.mode === "diff" ? $("vw-body").querySelector(".vw-diff") : null;
+    try {
+      const r = await api("/api/git/diff?" + new URLSearchParams({ dir: p, file: p }));
+      const el = box(); if (!el) return;
+      el.innerHTML = (VW.dirty ? `<div class="tiny">${t("还有没保存的修改；这里对比的是磁盘上的版本和上次提交。")}</div>` : "") + diffHtml(r.diff);
+    } catch (e) { const el = box(); if (el) el.innerHTML = `<div class="tiny">${esc(e.message)}</div>`; }
+  }
+
+  // ── HTML 预览：网关另起的只读小服务里渲染（和界面不同站点，网页脚本碰不到网关），文件一改自动刷新 ──
+  async function vwHtml() {
+    vwDropEd();
+    vwHtmlStop();
+    VW.mode = "html";
+    vwRenderActs();
+    const p = VW.path, n = VW.pvSeq = (VW.pvSeq || 0) + 1;
+    // 只认最近这一次：中途切了源码再点预览，先发的那次迟到了也不再挂定时器、不写正文（#177-3）
+    const stale = () => n !== VW.pvSeq || p !== VW.path || VW.mode !== "html";
+    $("vw-body").innerHTML = `<div class="vw-empty">${t("读取中…")}</div>`;
+    let r, pvCap;
+    try {
+      r = await post("/api/preview", { path: p });
+      // 回执里没有 url 时以前在 try 外 new URL 抛错，查看器永远停在“读取中…”（196 前端注入域）
+      if (!r || typeof r.url !== "string") throw new Error(t("预览服务没有返回地址"));
+      pvCap = new URL(r.url).pathname.split("/")[1];
+    } catch (e) { if (!stale()) $("vw-body").innerHTML = `<div class="vw-empty">${t("预览打不开")}: ${esc(e.message)}</div>`; return; }
+    if (stale()) return;
+    VW.pv = { url: r.url, mtime: r.mtime, net: !!r.net, cap: pvCap, blocked: 0 };
+    vwRenderActs();
+    // allow-forms / allow-popups：本地网页的表单提交（form-action 'self' 已放行同源）和 target=_blank 以前在沙箱里
+    // 一点反应都没有（195-C.9）。弹窗仍受预览 CSP 约束，不会变成逃出沙箱的新窗口
+    $("vw-body").innerHTML = `<iframe class="vw-html" src="${esc(pvSrc())}" sandbox="allow-scripts allow-same-origin allow-modals allow-downloads allow-pointer-lock allow-forms allow-popups" allow="autoplay; fullscreen" referrerpolicy="same-origin"></iframe>`;
+    // Claude 一边改、你一边看：每 1.5 秒看一眼修改时间，变了就重新载入
+    const h = VW.pvTimer = setInterval(async () => {
+      if (n !== VW.pvSeq) return clearInterval(h);   // 已经不是当前这次预览：只停自己，别拆后来的
+      if (viewerEl.classList.contains("hidden") || VW.mode !== "html" || VW.path !== p) return vwHtmlStop();
+      if (document.hidden) return;
+      if (VW.pv && !VW.pv.net) pvBlockedCheck();
+      let s; try { s = await api("/api/file/stat?path=" + encodeURIComponent(p)); } catch { return; }
+      if (n !== VW.pvSeq) return;
+      if (VW.pv && s && s.mtime && s.mtime !== VW.pv.mtime) { VW.pv.mtime = s.mtime; VW.size = s.size; $("vw-info").textContent = fmtSize(s.size); vwHtmlReload(); }
+    }, 1500);
+  }
+  // 开发者工具（Eruda）：开关记在本机；开着时预览地址带上 cc_devtools，预览服务往网页里插它（深浅跟界面走）
+  const pvDevtools = () => { try { return localStorage.getItem("cc.pvDevtools") === "1"; } catch { return false; } };
+  function pvSrc(bust) {
+    const q = new URLSearchParams();
+    if (pvDevtools()) { q.set("cc_devtools", "1"); if (document.documentElement.dataset.theme !== "light") q.set("cc_dark", "1"); }
+    if (bust) q.set("_r", Date.now());
+    const qs = q.toString();
+    return VW.pv.url + (qs ? (VW.pv.url.includes("?") ? "&" : "?") + qs : "");
+  }
+  // 预览里选中的元素递回来：只认当前预览框、当前预览站点发来的；只取几段文字放进输入框（不执行），发不发由用户定
+  window.addEventListener("message", (e) => {
+    const fr = $("vw-body").querySelector(".vw-html"), d = e.data;
+    if (!fr || e.source !== fr.contentWindow || !VW.pv || !d || typeof d !== "object") return;
+    try { if (e.origin !== new URL(VW.pv.url).origin) return; } catch { return; }
+    if (d.cc === "pickoff") { VW.picking = false; vwRenderActs(); return; }
+    if (d.cc !== "picked" || !VW.picking) return;      // 没在选取时递来的一概不收（审查 v0513b 低-32）
+    VW.picking = false; vwRenderActs();
+    pickInsert("@" + VW.path, d);
+  });
+  /** 选中的元素放进输入框：只取选择器和一小段 HTML 当文字，不执行任何东西 */
+  function pickInsert(where, d) {
+    const str = (v, n) => String(v == null ? "" : v).slice(0, n);
+    // \u9009\u62e9\u5668\u8981\u585e\u8fdb\u884c\u5185\u4ee3\u7801\uff1a\u53cd\u5f15\u53f7\u52a0\u96f6\u5bbd\u7a7a\u683c\u3001\u6362\u884c\u538b\u5e73\uff0c\u514d\u5f97\u95ed\u5408\u53cd\u5f15\u53f7\u5f80\u8349\u7a3f\u91cc\u6ce8\u5165 Markdown\uff08196 \u524d\u7aef\u6ce8\u5165\u57df\uff09
+    const sel = str(d.sel, 300).replace(/`/g, "`\u200b").replace(/[\r\n]+/g, " ");
+    const html = str(d.html, 900).replace(/```/g, "`\u200b``");
+    insertAtCursor(t("{path} 里的 {sel}：", { path: where, sel: "`" + sel + "`" }) + "\n```html\n" + html + "\n```\n");
+    toast(t("已放进输入框，接着写要怎么改"));
+  }
+  // 浏览器窗格（原生 WebView）里选中的：原生侧轮询取到后调这里，参数是 JSON 文本
+  window.__ccPickIn = (json) => {
+    let d; try { d = JSON.parse(String(json)); } catch { return; }
+    if (!d || typeof d !== "object" || d.cc !== "picked") return;
+    pickInsert(String(d.url || "").slice(0, 300), d);
+  };
+  function vwHtmlReload() {
+    VW.picking = false;
+    const f = $("vw-body").querySelector(".vw-html");
+    if (f && VW.pv) f.src = pvSrc(true);
+  }
+  // 不再显示预览：iframe 一并拆掉（藏起来的页面脚本还在跑），壳里的「只许连本机」也撤掉
+  function vwHtmlStop() {
+    VW.pvSeq = (VW.pvSeq || 0) + 1;
+    clearInterval(VW.pvTimer); VW.pvTimer = 0; VW.pv = null;
+    $("vw-body").querySelector(".vw-html")?.remove();
+  }
+  // 不联网（默认）：预览页能读它所在文件夹里的文件，网关给它加了只许连本机的 CSP，壳也在原生层拦外网（审查 v0513b 中-5）
+  async function pvBlockedCheck() {
+    const pv = VW.pv;
+    let s; try { s = await api("/api/preview/state?cap=" + encodeURIComponent(pv.cap)); } catch { return; }
+    if (VW.pv !== pv || !s || !Array.isArray(s.blocked) || s.blocked.length <= pv.blocked) return;
+    const first = !pv.blocked;
+    pv.blocked = s.blocked.length;
+    vwRenderActs();
+    if (first) toast(t("这个网页想连外网（{hosts}），已拦下。需要的话点上面的「联网」", { hosts: s.blocked.slice(0, 3).join("、") + (s.blocked.length > 3 ? "…" : "") }));
+  }
+  async function pvSetNet(on) {
+    const pv = VW.pv, p = VW.path;
+    if (!pv) return;
+    if (on && !confirm(t("允许这个网页连外网？\n\n联网后，网页里的脚本能把它所在文件夹、以及往上最多三层文件夹里的文件发到别处。只对你信得过的网页打开。换一个网页要重新允许。"))) return;
+    let r; try { r = await post("/api/preview", { path: p, net: !!on }); } catch (e) { return toast(e.message); }
+    if (VW.pv !== pv) return;
+    pv.net = !!r.net; pv.blocked = 0;
+    vwRenderActs();
+    vwHtmlReload();
+  }
+
+  function vwRenderText(mode) {
+    vwDropEd();
+    vwMdStop();          // 从预览切走：分段渲染的 observer 别跟着文字一起留着（FIND-026）
+    gutStop();           // 行号栏的 observer / 行文本也一起放下，等新的编辑框建好再挂（FIND-026）
+    VW.mode = mode;
+    if (mode === "edit" && isMd(VW.path) && !VW.plainMd && !VW.enc) { vwRenderActs(); return vwMdEditor(); }
+    if (mode === "md") vwMdPreview(VW.text);
+    else {
+      $("vw-body").innerHTML = `<div class="vw-edwrap"><div class="vw-gut"><div class="vw-gut-in"></div></div><textarea id="vw-text" class="mono ${VW.wrap ? "" : "nowrap"}" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div>`;
+      const ta = $("vw-text");
+      ta.value = VW.text;
+      ta.readOnly = !!VW.enc;
+      gutAttach(ta);
+      ta.addEventListener("input", () => { if (!VW.dirty) { VW.dirty = true; vwRenderActs(); } draftSave(); gutSchedule(); });
+      ta.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && String(e.key || "").toLowerCase() === "s") { e.preventDefault(); vwSave(false); }
+        else if (e.key === "Tab" && !e.ctrlKey && !e.altKey) { e.preventDefault(); document.execCommand("insertText", false, "\t"); }
+      });
+    }
+    vwRenderActs();
+  }
+
+  // ── Markdown 预览：长稿分段，只渲染屏幕附近的段，远了再收回去，几百万字也不卡 ──
+  const MD_LAZY_MIN = 200 * 1024, MD_CHUNK = 24 * 1024;
+  /** 按空行切段，不切开代码块、公式块，也不切在列表、缩进续行前面 */
+  function mdChunks(text) {
+    const lines = text.split("\n"), out = [];
+    let buf = [], n = 0, fence = "", math = false;
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      buf.push(l); n += l.length + 1;
+      const fm = /^\s{0,3}(`{3,}|~{3,})/.exec(l);
+      if (fm) { if (!fence) fence = fm[1][0]; else if (fm[1][0] === fence) fence = ""; continue; }
+      if (fence) continue;
+      const t = l.trim();
+      if (math) { if (t.endsWith("$$") || t.endsWith("\\]")) math = false; }
+      else if ((t.startsWith("$$") && !(t.length > 2 && t.slice(2).endsWith("$$"))) || (t.startsWith("\\[") && !t.endsWith("\\]"))) math = true;
+      if (math || n < MD_CHUNK || l.trim()) continue;
+      const nx = lines[i + 1];
+      if (nx == null || /^(\s|[-*+]\s|\d+[.)]\s|>)/.test(nx)) continue;
+      out.push(buf.join("\n")); buf = []; n = 0;
+    }
+    if (buf.length) out.push(buf.join("\n"));
+    return out;
+  }
+  let mdObs = null;
+  function vwMdStop() { if (mdObs) { mdObs.disconnect(); mdObs = null; } }
+  function vwMdPreview(text) {
+    vwMdStop();
+    const body = $("vw-body");
+    if (text.length < MD_LAZY_MIN) {
+      body.innerHTML = `<div class="vw-md bubble">${renderMd(text, mdImgSrc)}</div>`; enhanceMd(body);
+      return;
+    }
+    const parts = mdChunks(text);
+    // 没渲染的段先按字数估个高度占位，滚动条长度大致对；渲染过一次就记住真实高度
+    const cpl = Math.max(16, Math.floor((Math.min(body.clientWidth || 360, 760) - 32) / 16));
+    const est = (c) => { let h = 0; for (const l of c.split("\n")) h += l ? Math.ceil(l.length / cpl) * 27 + 10 : 6; return h; };
+    body.innerHTML = `<div class="vw-md bubble">${parts.map((c, i) => `<div class="vw-chunk" data-i="${i}" style="min-height:${est(c)}px"></div>`).join("")}</div>`;
+    const box = body.firstElementChild;
+    mdObs = new IntersectionObserver((ents) => {
+      for (const e of ents) {
+        const el = e.target, on = el.dataset.on === "1";
+        if (e.isIntersecting && !on) {
+          el.innerHTML = renderMd(parts[+el.dataset.i], mdImgSrc);
+          el.style.minHeight = ""; el.dataset.on = "1";
+          enhanceMd(el);
+        } else if (!e.isIntersecting && on) {
+          el.style.minHeight = el.offsetHeight + "px";
+          el.innerHTML = ""; el.dataset.on = "";
+        }
+      }
+    }, { root: box, rootMargin: "1500px 0px" });
+    for (const el of box.children) mdObs.observe(el);
+  }
+
+  // ── Markdown 编辑器（CodeMirror 6，按需加载，见 claude-apk/mdedit/） ──
+  let mdeditP = null;
+  const loadMdEdit = () => mdeditP || (mdeditP = import("/mdedit/mdedit.js").catch((e) => { mdeditP = null; throw e; }));
+  const MI = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
+  const MDBAR = [
+    ["undo", tk("撤销"), MI('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>')],
+    ["redo", tk("重做"), MI('<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>')],
+    0,
+    ["heading", tk("标题"), "H"],
+    ["bold", tk("粗体"), "<b>B</b>"],
+    ["italic", tk("斜体"), '<i style="font-family:Georgia,serif">I</i>'],
+    ["strike", tk("删除线"), "<s>S</s>"],
+    0,
+    ["quote", tk("引用"), MI('<path d="M5 5v14M10 7h9M10 12h9M10 17h6"/>')],
+    ["ul", tk("无序列表"), MI('<path d="M10 6h10M10 12h10M10 18h10"/><circle cx="5" cy="6" r=".9"/><circle cx="5" cy="12" r=".9"/><circle cx="5" cy="18" r=".9"/>')],
+    ["ol", tk("有序列表"), MI('<path d="M11 6h9M11 12h9M11 18h9M4 4.5h1.5V9M4 9h3M4 14.6c.6-.8 3-.9 3 .6 0 1.1-3 2-3 3.3h3.2"/>')],
+    ["task", tk("任务列表"), MI('<path d="M3.5 4h7v7h-7zM5.3 7.6l1.4 1.4 2.3-2.7M13.5 7.5h7M3.5 14h7v7h-7zM13.5 17.5h7"/>')],
+    0,
+    ["link", tk("链接"), MI('<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>')],
+    ["image", tk("图片"), MI('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5-9 9"/>')],
+    ["code", tk("代码"), MI('<path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/>')],
+    ["hr", tk("分割线"), MI('<path d="M3 12h18"/>')],
+    0,
+    ["search", tk("查找替换"), MI('<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>')],
+  ];
+  /** md 里的图片地址 → 能加载的地址（相对路径按这个文件所在目录算） */
+  function mdImgSrc(u) {
+    if (/^(https?:|data:|blob:)/i.test(u)) return extImg(u) || u;   // 外链图默认先给按钮（01-core extImg）
+    // 按段 decodeURIComponent：decodeURI 不解 %23 %3F（# ?），fig%23one.png 会被当成字面带百分号的文件名（审查 #50 S2-08）
+    const dec = (x) => { try { return decodeURIComponent(x); } catch { return x; } };
+    const rel = u.startsWith("/");
+    let p = (rel ? "" : VW.path.replace(/\/[^/]*$/, "")) + "/" + u.split("/").map(dec).join("/");
+    const out = [];
+    for (const seg of p.split("/")) { if (seg === "..") out.pop(); else if (seg !== "." && seg !== "") out.push(seg); }
+    return fileUrl("/" + out.join("/"));
+  }
+  async function vwMdEditor() {
+    const path = VW.path, body = $("vw-body");
+    body.innerHTML = `<div class="vw-empty">${t("读取中…")}</div>`;
+    let m;
+    try { m = await loadMdEdit(); } catch (e) {
+      if (VW.path !== path || VW.mode !== "edit") return;
+      toast(t("编辑器加载失败，改用纯文本：{msg}", { msg: e.message || String(e) }), true);
+      VW.plainMd = true;   // 只管这一个文件：换个文件（openViewer）就再试一次加载（#177-9）
+      return vwRenderText("edit");
+    }
+    if (VW.path !== path || VW.mode !== "edit" || VW.ed) return;
+    body.innerHTML = `<div class="vw-mded"></div><div class="vw-mdbar">${MDBAR.map((b) => b
+      ? `<button type="button" data-md="${b[0]}" title="${esc(t(b[1]))}" aria-label="${esc(t(b[1]))}">${b[2]}</button>`
+      : '<span class="sep"></span>').join("")}</div>`;
+    VW.ed = m.createMdEditor(body.querySelector(".vw-mded"), {
+      doc: VW.text,
+      onChange: () => { if (!VW.dirty) { VW.dirty = true; vwRenderActs(); } draftSave(); },
+      onSelect: () => { clearTimeout(VW.wt); VW.wt = setTimeout(vwInfo, 200); },
+      onSave: () => vwSave(false),
+      resolveSrc: mdImgSrc,
+      placeholder: t("开始写…"),
+      phrases: {
+        "Find": t("查找"), "Replace": t("替换"), "next": t("下一个"), "previous": t("上一个"), "all": t("全部"),
+        "match case": t("区分大小写"), "regexp": t("正则"), "by word": t("整词"),
+        "replace": t("替换"), "replace all": t("全部替换"), "close": t("关闭"),
+      },
+      ph: {
+        bold: t("粗体"), italic: t("斜体"), strike: t("删除线"), code: t("代码"),
+        link: { text: t("链接文字"), url: "https://" }, image: { text: t("图片说明"), url: t("图片路径") },
+      },
+    });
+    const bar = body.querySelector(".vw-mdbar");
+    bar.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });   // 点按钮不收键盘
+    bar.addEventListener("click", (e) => { const b = e.target.closest("[data-md]"); if (b && VW.ed) VW.ed.run(b.dataset.md); });
+    vwInfo();
+  }
+
+  async function vwSave(force) {
+    // 还没读完（或读失败）就没有正文可存：存了就是拿空内容盖掉文件
+    if (!VW.ready || !VW.mtime && VW.size) return toast(t("文件还没读完，等一下再保存"), true);
+    if (VW.saving) return;
+    if (VW.enc) return toast(t("这个文件是 {enc} 编码，存回去会损坏原文，只能查看", { enc: VW.enc }), true);
+    const text = vwText(), gen = VW.gen, path = VW.path;
+    // 一字未改就不写盘：CRLF 文件即使不编辑，textarea 也会把换行规整成 LF，存一次整份文件就变了（195-C.4）
+    if (!VW.dirty && !force) return toast(t("没有改动"));
+    let r;
+    VW.saving = true;
+    try {
+      r = await fetch(`/api/file/save?path=${encodeURIComponent(path)}&mtime=${VW.mtime}${force ? "&force=1" : ""}`, {
+        // 原文带 BOM / 纯 CRLF 换行的照样带回去
+        method: "POST", body: (VW.bom ? "\uFEFF" : "") + (VW.eol === "\r\n" ? text.replace(/\r?\n/g, "\r\n") : text),
+      });
+    } catch (e) { VW.saving = false; return toast(t("保存失败：{msg}", { msg: e.message }), true); }
+    VW.saving = false;
+    if (gen !== VW.gen) { if (r.ok) toast(t("已保存")); return; }   // 已经换了别的文件：别动现在这个的状态
+    if (r.status === 409) {
+      let c = {};
+      try { c = await r.json(); } catch {}
+      // JSON 体迟到期间又换了文件：这不是现在这份文件的冲突，别让旧文件的确认框去清新文件的稿 / 重新载入（UIFS-007）
+      if (gen !== VW.gen) return;
+      // 原文件不在了（比如刚在文件面板里改了名）：问清楚再按原名另存，修改先留在编辑器里（#145-2）
+      if (c.error === "gone") {
+        if (confirm(t("原文件已经不在了（被改名、移动或删除）。\n确定：按原来的名字另存一份\n取消：先不存，修改留在编辑器里"))) return vwSave(true);
+        return;
+      }
+      if (confirm(t("文件在你打开之后被改过了（可能是 Claude 改的）。\n确定：用你的版本覆盖\n取消：放弃你的修改，重新载入"))) return vwSave(true);
+      VW.dirty = false;
+      draftClear();
+      return vwLoadText("edit");
+    }
+    let j = {};
+    try { j = await r.json(); } catch {}
+    // 同上：解析期间换了文件，旧回执的 mtime / size 不能写到新文件上（UIFS-007）
+    if (gen !== VW.gen) { if (r.ok) toast(t("已保存")); return; }
+    if (!r.ok) return toast(t("保存失败：{msg}", { msg: j.error || r.status }), true);
+    VW.mtime = j.mtime; VW.size = j.size;
+    // 保存在途时又改了：存下去的只是那一刻的版本，新改的还没存，别把「未保存」清掉（审查 C-002）
+    // 切到预览时没有编辑器，VW.text 就是缓冲本身（存着更新的版本）：那时不能拿回执里的旧版盖掉它（审查 B07）
+    if (vwText() === text) { VW.text = text; VW.dirty = false; draftClear(); } else if (VW.ed || $("vw-text")) VW.text = text;
+    vwInfo();
+    vwRenderActs();
+    toast(t("已保存"));
+    vwGitCheck();                     // 存完改动行数变了
+  }
+
+  function vwImage() {
+    vwActs([]);
+    $("vw-body").innerHTML = `<div class="vw-img"><img src="${fileUrl(VW.path)}" alt=""></div>`;
+    const box = $("vw-body").querySelector(".vw-img");
+    const img = box.querySelector("img");
+    // 坏图 / 读不了：说清楚，给个重试（审查 C-011）
+    img.addEventListener("error", () => {
+      box.innerHTML = `<div class="vw-empty"><div>${t("图片读不出来（文件损坏，或格式不支持）")}</div><button class="btn ghost sm" data-a="img-retry">${t("重试")}</button></div>`;
+      box.querySelector('[data-a="img-retry"]').onclick = () => vwImage();
+    });
+    img.addEventListener("load", () => { $("vw-info").textContent = `${img.naturalWidth}×${img.naturalHeight} · ${fmtSize(VW.size)}`; });
+    img.addEventListener("click", (e) => {
+      // 放大时以点到的位置为中心
+      const r = img.getBoundingClientRect(), fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      box.classList.toggle("zoom");
+      if (box.classList.contains("zoom")) {
+        box.scrollLeft = fx * img.naturalWidth - box.clientWidth / 2;
+        box.scrollTop = fy * img.naturalHeight - box.clientHeight / 2;
+      }
+    });
+  }
+

@@ -1,0 +1,16 @@
+# 由 cccodroid install.sh 生成；X-cccodroid-Managed=true 表示归安装器管理。
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=cccodroid
+GenericName=Claude Code 图形工作台
+GenericName[zh_CN]=Claude Code 图形工作台
+Comment=启动本机 cccodroid 网关并打开界面
+Comment[zh_CN]=启动本机 cccodroid 网关并打开界面
+Exec="@BIN_DIR@/cccodroid" open
+Icon=cccodroid
+Terminal=false
+Categories=Development;Utility;
+Keywords=claude;code;ai;cccodroid;
+StartupNotify=false
+X-cccodroid-Managed=true

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────
+# cccodroid-steam-launch：Steam（含游戏模式）里「cccodroid」这个非 Steam 游戏启动的就是它
+#
+# 必须在前台完成：Steam 把本进程当作游戏，进程退出就认为游戏结束。所以这里先确保网关在跑，
+# 再 exec 进全屏窗口（cccodroid-ui --kiosk），不能用 cccodroid open（它把窗口交给 systemd 单元，
+# 本进程立刻退出，Steam 会马上收掉游戏界面）。
+# 日志：<前缀>/logs/steam-launch.log（不含令牌）。
+# 用 `cccodroid steam add` 把它登记成 Steam 里的快捷方式。
+# ─────────────────────────────────────────────────────────────────────
+set -uo pipefail
+
+SELF_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd -P -- "$SELF_DIR/.." && pwd -P)"
+PREFIX="${CCCODROID_PREFIX:-$(cd -P -- "$ROOT/../.." && pwd -P)}"
+CURRENT="$PREFIX/current"
+
+CCCODROID_PORT=""
+if [ -f "$PREFIX/install.env" ]; then
+  # shellcheck disable=SC1090
+  . "$PREFIX/install.env"
+fi
+PORT="${CCCODROID_PORT:-8790}"
+
+LOG="$PREFIX/logs/steam-launch.log"
+mkdir -p "$PREFIX/logs"
+if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+  : > "$LOG"
+fi
+note() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
+
+note "启动（pid $$，XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-?}，WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-?}，DISPLAY=${DISPLAY:-?}）"
+
+if ! port_open; then
+  note "网关没在监听，启动网关"
+  "$CURRENT/bin/cccodroid" start >/dev/null 2>>"$LOG" || note "cccodroid start 返回非零"
+  # 总共最多等 30 秒（cccodroid start 自己已经等了一阵，这里补足剩下的）
+  while [ "$SECONDS" -lt 30 ] && ! port_open; do
+    sleep 0.5
+  done
+fi
+if ! port_open; then
+  note "网关 30 秒内没有就绪（端口 $PORT），放弃；用 cccodroid logs 查看原因"
+  exit 1
+fi
+
+note "网关已就绪，进入全屏窗口"
+exec "$CURRENT/bin/cccodroid-ui" --kiosk >>"$LOG" 2>&1

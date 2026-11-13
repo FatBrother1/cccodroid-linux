@@ -1,0 +1,2130 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────
+# cccodroid 命令行入口（随每个版本目录分发）
+#
+#   cccodroid start|stop|restart|status|url|open|logs|procs|doctor|tools-doc|version
+#             update|rollback|prune|steam
+#
+# 前缀由本脚本所在位置反推（<prefix>/versions/<版本>/bin/cccodroid）；
+# 也可以用环境变量 CCCODROID_PREFIX 指定。
+# ─────────────────────────────────────────────────────────────────────
+set -euo pipefail
+shopt -s nullglob
+shopt -u patsub_replacement 2>/dev/null || true
+
+# 单元名可以用环境变量覆盖：测试、或同一台机器上并存第二份安装时，别去碰正式的那一份。
+SERVICE_NAME="${CCCODROID_SERVICE_NAME:-cccodroid-gateway.service}"
+UI_SERVICE_NAME="${CCCODROID_UI_SERVICE_NAME:-cccodroid-ui.service}"
+
+SELF_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd -P -- "$SELF_DIR/.." && pwd -P)"
+
+log()  { printf '[cccodroid] %s\n' "$*"; }
+warn() { printf '[cccodroid] 警告：%s\n' "$*" >&2; }
+die()  { printf '[cccodroid] 错误：%s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+用法：cccodroid <命令>
+
+  start            启动网关（有 systemd 服务时用服务，否则后台进程）
+  stop [--force]   停止网关
+  restart [--force] 重启网关
+  status           查看服务、端口与界面地址（未运行时退出码为 1）
+  url              打印带令牌的界面地址
+  open [--kiosk]   确保网关运行后打开原生窗口（没有 Qt 时退回浏览器）
+  logs             跟随日志（systemd 用 journalctl，否则 tail）
+  procs            列出网关服务里脱离进程树的程序（停止 / 重启 / 更新会把它们杀掉）
+  doctor [--json]  一条命令体检：服务、端口、令牌、权限、日志量、Qt、磁盘、旧版本…
+                   每项给出 OK / WARN / FAIL 和修法；退出码 0 全正常、1 有警告、2 有失败
+  tools-doc [--write [--force]]
+                   按本机实际探测结果生成给 Claude 看的工具清单（--write 写入 home/TOOLS-dev.md；
+                   手工改过的文件不覆盖，--force 才覆盖）
+  version          显示版本、前缀、Node 与 Claude Code 版本
+  update [来源] [--sha256 HEX] [--no-restart] [--force]
+                   更新。来源：本地 .tar.gz、-（标准输入）、http(s):// 的包或 latest.json、
+                   [用户@]主机:/路径.tar.gz（经 ssh 拉取）；不带参数显示说明（--help 看详情）
+  update --check [--url 基址]
+                   读 基址/latest.json 看有没有新版（基址默认取 home/update.conf 里的 url=）
+  rollback [--force]
+                   把 current 切回上一个版本并重启网关
+  prune [--keep N] [--dry-run]
+                   删除旧版本目录（永远保留 current 与上一个版本），并清理残留的临时目录
+  steam add|remove|status [--user ID] [--dry-run] [--restart-steam]
+                   在 Steam 里登记 / 删除 / 查看「cccodroid」快捷方式（游戏模式入口）
+  import <来源>    导入会话包（别的机器上 cccodroid export 出来的 .zip；来源可以是本地文件、-、
+                   http(s):// 或 [用户@]主机:/路径.zip）；cwd 改成本机工作区，同号的跳过
+  import --undo <清单>
+                   把某次导入的会话放进回收站（清单在 home/imports/，仍可从回收站恢复）
+  export [--all | 会话号...]
+                   把会话导出成 .zip（放在 home/exports/），打印路径
+  bridge <命令>    内置的 OpenAI 本地协议桥：配置、启停、登记成接口、常驻服务
+                   （cccodroid bridge help 查看全部子命令）
+  ui-mcp install|remove|status
+                   页面操控 MCP（ccui）：让 Claude 读原生窗口里的页面、点按、输入、滚动、截图
+  install-claude [--version 版本] [--from 本地文件]
+                   安装/补装 Claude Code（发行包不随附；从 npm 官方平台包下载并验签）
+  help             显示本帮助
+
+停止、重启、更新、回滚会让网关服务 cgroup 里的所有进程一起退出。里面如果有 setsid / nohup
+起的常驻程序（Steam、机器人、开发服务器…），这几条命令会先列出来并拒绝执行；
+这类程序应该用 cc-detach 起，确认可以杀掉时再加 --force。
+
+环境变量：
+  CCCODROID_PREFIX            安装前缀（默认从脚本位置反推）
+  CCCODROID_NODE              指定 Node 可执行文件（一般不用）
+  CCCODROID_SERVICE_NAME      覆盖网关 systemd 单元名（默认 cccodroid-gateway.service；测试 / 第二份安装用）
+  CCCODROID_UI_SERVICE_NAME   覆盖窗口单元名（默认 cccodroid-ui.service）
+  CCCODROID_STEAM_DIR         steam 子命令改用这个 Steam 目录（含 userdata/）
+EOF
+}
+
+# ── 前缀与安装清单 ────────────────────────────────────────────────────
+detect_prefix() {
+  local cand=""
+  if [ -n "${CCCODROID_PREFIX:-}" ]; then
+    cand="$CCCODROID_PREFIX"
+  else
+    cand="$(cd -P -- "$ROOT/../.." && pwd -P)"   # versions/<版本>/../.. = 安装前缀
+  fi
+  if [ -d "$cand/versions" ] && { [ -f "$cand/install.env" ] || [ -L "$cand/current" ]; }; then
+    printf '%s\n' "$cand"
+    return 0
+  fi
+  return 1
+}
+
+if ! PREFIX="$(detect_prefix)"; then
+  die "无法确定安装前缀；请设置 CCCODROID_PREFIX，或从 ~/.local/bin/cccodroid 启动"
+fi
+prefix_candidate="$PREFIX"
+if ! PREFIX="$(cd -P -- "$prefix_candidate" 2>/dev/null && pwd -P)"; then
+  die "安装前缀不存在：$prefix_candidate"
+fi
+CURRENT="$PREFIX/current"
+
+# 清单由 install.sh 生成；先给默认值，避免 set -u 在旧清单上出错。
+CCCODROID_PREFIX=""
+CCCODROID_BIN_DIR=""
+CCCODROID_VERSION=""
+CCCODROID_SERVICE=""
+CCCODROID_PORT=""
+CCCODROID_UNIT=""
+CCCODROID_UI_UNIT=""
+CCCODROID_DESKTOP=""
+CCCODROID_ICON=""
+CCCODROID_PREVIOUS=""
+if [ -f "$PREFIX/install.env" ]; then
+  # shellcheck disable=SC1090
+  . "$PREFIX/install.env"
+fi
+
+PORT="${CCCODROID_PORT:-8790}"
+SERVICE_MODE="${CCCODROID_SERVICE:-1}"
+BIN_DIR="${CCCODROID_BIN_DIR:-$HOME/.local/bin}"
+UNIT_PATH="${CCCODROID_UNIT:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$SERVICE_NAME}"
+UI_UNIT_PATH="${CCCODROID_UI_UNIT:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UI_SERVICE_NAME}"
+PID_FILE="$PREFIX/run/gateway.pid"
+TOKEN_FILE="$PREFIX/home/.gateway-token"
+
+# 更新时解包的临时目录；放在全局，避免 EXIT trap 里引用已经失效的局部变量。
+UPDATE_TMP=""
+cleanup_update_tmp() {
+  if [ -n "${UPDATE_TMP:-}" ] && [ -d "$UPDATE_TMP" ]; then
+    rm -rf "$UPDATE_TMP"
+  fi
+}
+trap cleanup_update_tmp EXIT
+
+# ── 小工具 ────────────────────────────────────────────────────────────
+systemd_ok() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl --user show-environment >/dev/null 2>&1
+}
+
+use_systemd() {
+  [ "$SERVICE_MODE" = "1" ] && [ -f "$UNIT_PATH" ] && systemd_ok
+}
+
+port_open() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
+}
+
+# 用户服务管理器的环境里有没有显示变量：窗口服务用的是这份环境，不是当前 shell 的
+# （从 SSH 里调用时当前 shell 往往没有 WAYLAND_DISPLAY / DISPLAY）。
+manager_has_display() {
+  systemctl --user show-environment 2>/dev/null | grep -q -E '^(WAYLAND_DISPLAY|DISPLAY)='
+}
+
+find_qml() {
+  local cand
+  for cand in "${CCCODROID_QML:-}" /usr/lib/qt6/bin/qml /usr/bin/qml6 /usr/bin/qml; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+read_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  local p=""
+  p="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [ -n "$p" ] || return 1
+  printf '%s\n' "$p"
+}
+
+pid_alive() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 1
+  kill -0 "$p" 2>/dev/null
+}
+
+wait_port() {
+  local tries="${1:-50}" i
+  for ((i = 0; i < tries; i++)); do
+    if port_open; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+gateway_url() {
+  [ -r "$TOKEN_FILE" ] || return 1
+  local token=""
+  token="$(tr -d '[:space:]' < "$TOKEN_FILE")" || return 1
+  [[ "$token" =~ ^[0-9a-fA-F]{32,}$ ]] || return 1
+  printf 'http://127.0.0.2:%s/?t=%s\n' "$PORT" "$token"
+}
+
+# 解析 --force / -f，其余参数放进 REST。
+FORCE=0
+REST=()
+parse_force() {
+  local a
+  FORCE=0
+  REST=()
+  for a in "$@"; do
+    case "$a" in
+      --force|-f) FORCE=1 ;;
+      *) REST+=("$a") ;;
+    esac
+  done
+}
+
+# 网关服务 cgroup 里"脱离进程树"的程序：父进程不在这个 cgroup 里（被 systemd --user 收养），
+# 也就是 setsid / nohup / 双 fork 起的常驻程序。服务是 KillMode=mixed，停止或重启时它们会被一起 SIGKILL。
+# 每行输出 pid<TAB>命令行；没有就不输出。只检查 systemd 模式。
+gateway_escapees() {
+  use_systemd || return 0
+  local cg="" main="" pid="" line="" rest="" state="" ppid="" cmd=""
+  local procs=()
+  local -A inset=()
+  cg="$(systemctl --user show -p ControlGroup --value "$SERVICE_NAME" 2>/dev/null || true)"
+  main="$(systemctl --user show -p MainPID --value "$SERVICE_NAME" 2>/dev/null || true)"
+  [ -n "$cg" ] && [ -r "/sys/fs/cgroup$cg/cgroup.procs" ] || return 0
+  mapfile -t procs < "/sys/fs/cgroup$cg/cgroup.procs"
+  for pid in "${procs[@]}"; do inset[$pid]=1; done
+  for pid in "${procs[@]}"; do
+    [ "$pid" = "$main" ] && continue
+    line="$(cat "/proc/$pid/stat" 2>/dev/null)" || continue
+    rest="${line##*) }"            # comm 里可能带空格和括号：从最后一个 ") " 往后切
+    state="${rest%% *}"
+    [ "$state" = "Z" ] && continue
+    rest="${rest#* }"
+    ppid="${rest%% *}"
+    [ -n "${inset[$ppid]:-}" ] && continue
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-80)"
+    printf '%s\t%s\n' "$pid" "${cmd:-?}"
+  done
+}
+
+# 停止 / 重启 / 更新之前调用：有脱离进程树的程序就拒绝，除非带了 --force。
+confirm_escapees() {
+  local force="${1:-0}" list=""
+  [ "$force" = "1" ] && return 0
+  list="$(gateway_escapees || true)"
+  [ -n "$list" ] || return 0
+  warn "网关服务里有脱离进程树的程序，停止或重启会把它们一起杀掉："
+  printf '%s\n' "$list" | awk -F'\t' '{printf "    %s  %s\n", $1, $2}' >&2
+  warn "要保留它们，先用 cc-detach 重新启动（会移出网关的 cgroup）；确认可以杀掉就加 --force。"
+  return 1
+}
+
+# ── 通用小函数（更新 / 回滚 / 清理 / 体检共用）──────────────────────────
+# 包成 shell 单引号字面量：拼给远端 shell 的路径、写进 install.env 的值都用它。
+shquote() {
+  local s="${1-}" out="'" ch i
+  for ((i = 0; i < ${#s}; i++)); do
+    ch="${s:i:1}"
+    if [ "$ch" = "'" ]; then
+      out+="'\\''"
+    else
+      out+="$ch"
+    fi
+  done
+  out+="'"
+  printf '%s' "$out"
+}
+
+human_kb() {
+  local kb="${1:-0}"
+  if [ "$kb" -ge 1048576 ]; then
+    awk -v k="$kb" 'BEGIN { printf "%.1f GB", k / 1048576 }'
+  elif [ "$kb" -ge 1024 ]; then
+    awk -v k="$kb" 'BEGIN { printf "%.0f MB", k / 1024 }'
+  else
+    printf '%s KB' "$kb"
+  fi
+}
+
+# 22.7M / 1.2G / 512K → 字节
+size_to_bytes() {
+  awk -v s="$1" 'BEGIN { n = s + 0; u = toupper(substr(s, length(s), 1)); m = 1
+    if (u == "K") m = 1024; else if (u == "M") m = 1048576; else if (u == "G") m = 1073741824; else if (u == "T") m = 1099511627776
+    printf "%d", n * m }'
+}
+
+# 版本比较，输出 lt / eq / gt
+ver_cmp() {
+  local a="$1" b="$2"
+  if [ "$a" = "$b" ]; then
+    printf 'eq'
+  elif [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n 1)" = "$a" ]; then
+    printf 'lt'
+  else
+    printf 'gt'
+  fi
+}
+
+VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+
+installed_version() {
+  local v=""
+  if [ -r "$CURRENT/VERSION" ]; then
+    v="$(tr -d '[:space:]' < "$CURRENT/VERSION" 2>/dev/null || true)"
+  fi
+  printf '%s' "${v:-unknown}"
+}
+
+node_bin() {
+  local c
+  for c in "$CURRENT/runtime/node/bin/node" "$CURRENT/runtime/node/node"; do
+    if [ -x "$c" ]; then
+      printf '%s' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+gateway_running() {
+  local p=""
+  if use_systemd; then
+    systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null
+    return
+  fi
+  p="$(read_pid || true)"
+  [ -n "$p" ] && pid_alive "$p"
+}
+
+# 改写 install.env 里的一行（没有就追加），保持 0600。
+manifest_set() {
+  local key="$1" val="$2" f="$PREFIX/install.env" tmp="" line="" replaced=0
+  [ -f "$f" ] || return 1
+  tmp="$f.tmp.$$"
+  : > "$tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key="*) printf '%s=%s\n' "$key" "$(shquote "$val")" >> "$tmp"; replaced=1 ;;
+      *) printf '%s\n' "$line" >> "$tmp" ;;
+    esac
+  done < "$f"
+  [ "$replaced" -eq 1 ] || printf '%s=%s\n' "$key" "$(shquote "$val")" >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$f"
+}
+
+# ── 命令 ──────────────────────────────────────────────────────────────
+cmd_start() {
+  if use_systemd; then
+    systemctl --user start "$SERVICE_NAME"
+  else
+    local pid=""
+    if pid="$(read_pid)" && pid_alive "$pid"; then
+      log "已经在运行（pid $pid）"
+      return 0
+    fi
+    mkdir -p "$PREFIX/logs" "$PREFIX/run"
+    nohup "$CURRENT/bin/cccodroid-gateway" "$PORT" >>"$PREFIX/logs/gateway.out" 2>&1 &
+    echo "$!" > "$PID_FILE"
+  fi
+
+  if wait_port 60; then
+    log "已启动：http://127.0.0.1:$PORT"
+    local u=""
+    if u="$(gateway_url)"; then
+      log "界面：$u"
+    fi
+    return 0
+  fi
+  warn "端口 $PORT 在 12 秒内没有就绪；用 cccodroid logs 查看日志"
+  return 1
+}
+
+cmd_stop() {
+  local keep_ui=0 rest=() a
+  for a in "$@"; do
+    case "$a" in
+      --keep-ui) keep_ui=1 ;;
+      *) rest+=("$a") ;;
+    esac
+  done
+  parse_force "${rest[@]}"
+  confirm_escapees "$FORCE" || return 1
+  local pid=""
+  # 只有这个前缀确实在用 systemd 服务时才去停单元：手动模式（或测试用的临时前缀）下按固定单元名去停，
+  # 会把机器上正式安装的那份一起停掉。
+  if use_systemd; then
+    systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  fi
+  if pid="$(read_pid)" && pid_alive "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    local i
+    for ((i = 0; i < 20; i++)); do
+      if ! pid_alive "$pid"; then
+        break
+      fi
+      sleep 0.2
+    done
+    if pid_alive "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$PID_FILE"
+  # 原生窗口一起关掉（restart 不关：它会自己重连）。窗口服务优先；直接起的窗口按 main.qml 路径兜底。
+  if [ "$keep_ui" -eq 0 ]; then
+    if use_systemd && [ -f "$UI_UNIT_PATH" ]; then
+      systemctl --user stop "$UI_SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
+    pkill -f "$PREFIX/current/desktop/main.qml" 2>/dev/null || true
+  fi
+  log "已停止"
+}
+
+cmd_restart() {
+  parse_force "$@"
+  confirm_escapees "$FORCE" || return 1
+  cmd_stop --force --keep-ui
+  cmd_start
+}
+
+cmd_procs() {
+  local list=""
+  if ! use_systemd; then
+    log "手动模式：不检查（只有 systemd 服务模式下，网关的 cgroup 才会连带这些程序）"
+    return 0
+  fi
+  list="$(gateway_escapees || true)"
+  if [ -z "$list" ]; then
+    log "网关服务里没有脱离进程树的程序"
+    return 0
+  fi
+  log "网关服务里脱离进程树的程序（停止 / 重启 / 更新会把它们杀掉）："
+  printf '%s\n' "$list" | awk -F'\t' '{printf "  %s  %s\n", $1, $2}'
+}
+
+# ── 工具清单：按本机实际探测结果生成 ─────────────────────────────────────
+# 网关把 TOOLS-dev.md 拼进 Claude 的系统提示。随包的通用版本不声称任何具体工具；
+# 这里探测本机真正有什么，生成 <前缀>/home/TOOLS-dev.md（网关优先读它）。
+TD_PATH=""
+td_has() { PATH="$TD_PATH" command -v "$1" >/dev/null 2>&1; }
+td_run() { PATH="$TD_PATH" timeout 6 "$@" 2>/dev/null | head -n 1 || true; }
+td_present() {
+  local out="" c
+  for c in "$@"; do
+    if td_has "$c"; then out+="${out:+、}$c"; fi
+  done
+  printf '%s' "$out"
+}
+td_absent() {
+  local out="" c
+  for c in "$@"; do
+    if ! td_has "$c"; then out+="${out:+、}$c"; fi
+  done
+  printf '%s' "$out"
+}
+
+render_tools_doc() {
+  TD_PATH="$PREFIX/prefix/bin:$CURRENT/runtime/node/bin:$PREFIX/home/.local/bin:/usr/local/bin:/usr/bin:/bin"
+  local os="Linux" arch line mods mcps ptrace tail_tpl ccpath
+  os="$( ( . /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-Linux}" ) || printf 'Linux' )"
+  arch="$(uname -m)"
+
+  printf '## 本机工具清单（%s，%s）\n\n' "$os" "$arch"
+  printf '这份清单由 `cccodroid tools-doc` 在 %s 按本机实际探测生成；装了新工具后运行 `cccodroid tools-doc --write` 重新生成。\n' "$(date +%F)"
+  printf '用命令前仍可 `command -v 命令名` 确认；缺什么就用 pip / npm 装进工具前缀，不要随便改系统目录。\n'
+  if [ -d "$PREFIX/prefix/bin" ]; then
+    printf '工具前缀在 `%s/prefix`，它的 `bin` 排在 PATH 最前面，Claude 和终端共用同一套。\n' "$PREFIX"
+  fi
+
+  printf '\n### 编译与构建\n'
+  if td_has cc; then
+    ccpath="$(PATH="$TD_PATH" command -v cc)"
+    if [ "$ccpath" = "$PREFIX/prefix/bin/cc" ] && td_has zig; then
+      printf -- '- `cc` / `c++`：Zig %s 的 clang 前端（等价 `zig cc` / `zig c++`）。\n' "$(td_run zig version)"
+    else
+      line="$(td_run cc --version)"
+      printf -- '- `cc` / `c++`：%s\n' "${line:-可用}"
+    fi
+  fi
+  line="$(td_present zig gcc clang make cmake ninja patch pkg-config)"
+  [ -n "$line" ] && printf -- '- 已有：%s。\n' "$line"
+  line="$(td_absent cc make cmake ninja)"
+  [ -n "$line" ] && printf -- '- 没有：%s。需要编译 C/C++ 时先装一套工具链再动手。\n' "$line"
+
+  printf '\n### Python / Node\n'
+  if td_has python3; then
+    line="$(td_run python3 --version)"
+    mods="$(PATH="$TD_PATH" timeout 10 python3 -c 'import importlib.util as u;print("、".join(m for m in ("pip","numpy","capstone","requests") if u.find_spec(m)))' 2>/dev/null || true)"
+    printf -- '- `python3`：%s%s。\n' "${line:-可用}" "${mods:+，已装 $mods}"
+  else
+    printf -- '- 没有 `python3`。\n'
+  fi
+  if td_has node; then
+    printf -- '- `node` / `npm` / `npx`：Node %s；`claude` 是官方 CLI 的包装。\n' "$(td_run node --version)"
+  fi
+
+  printf '\n### 系统工具\n'
+  line="$(td_present git curl wget ffmpeg ffprobe rg fd jq sqlite3 7z unzip zip xz zstd gdb strace ltrace file tar rsync ssh perl)"
+  printf -- '- 已有：%s。\n' "${line:-（无）}"
+  line="$(td_absent magick soffice java dotnet x86_64-w64-mingw32-gcc)"
+  [ -n "$line" ] && printf -- '- 没有：%s。\n' "$line"
+
+  if td_has r2 || td_has scanmem || td_has gdb; then
+    printf '\n### 逆向 / 游戏 mod\n'
+    if td_has r2; then printf -- '- radare2 %s：`r2`、`rabin2`、`rasm2`、`rax2` 等。\n' "$(td_run r2 -v | sed -E 's/^radare2 ([^ ]+).*/\1/')"; fi
+    if td_has scanmem; then printf -- '- `scanmem` 扫描 / 修改进程内存。\n'; fi
+    if td_has gdb; then printf -- '- `gdb` 可附加进程。\n'; fi
+    ptrace="$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || true)"
+    if [ -n "$ptrace" ]; then
+      if [ "$ptrace" = "0" ]; then
+        printf -- '- `ptrace_scope=0`：gdb / scanmem 可以附加非子进程。\n'
+      else
+        printf -- '- `ptrace_scope=%s`：只能附加自己启动的子进程；要附加别的进程需要放开该内核参数（需要 root）。\n' "$ptrace"
+      fi
+    fi
+  fi
+
+  mcps=""
+  if td_has python3 && [ -r "$PREFIX/home/.claude.json" ]; then
+    mcps="$(PATH="$TD_PATH" python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print("、".join(sorted((d.get("mcpServers") or {}).keys())))' "$PREFIX/home/.claude.json" 2>/dev/null || true)"
+  fi
+  if [ -n "$mcps" ]; then
+    printf '\n### MCP 服务\n- 已配置：%s（工具名以 `mcp__服务名__` 开头）。\n' "$mcps"
+  fi
+
+  printf '\n### 系统状态\n'
+  if sudo -n true 2>/dev/null; then
+    printf -- '- `sudo` 免密。系统级改动前自己判断是否可逆。\n'
+  else
+    printf -- '- `sudo` 需要密码，别假设能提权。\n'
+  fi
+  if command -v steamos-readonly >/dev/null 2>&1; then
+    if findmnt -no OPTIONS / 2>/dev/null | tr ',' '\n' | grep -qx rw; then
+      printf -- '- 根分区当前可写；SteamOS 大版本更新可能重新打开只读并覆盖 `/etc` 下的改动。\n'
+    else
+      printf -- '- 根分区只读（SteamOS 默认）；装东西放用户目录或工具前缀。\n'
+    fi
+  fi
+  printf '\n'
+
+  tail_tpl="$CURRENT/templates/TOOLS-dev.generic.md"
+  if [ -r "$tail_tpl" ]; then
+    sed -n '/^### 长驻程序/,$p' "$tail_tpl"
+  fi
+}
+
+cmd_tools_doc() {
+  local out="$PREFIX/home/TOOLS-dev.md" text="" write=0 force=0 a
+  for a in "$@"; do
+    case "$a" in
+      --write|-w) write=1 ;;
+      --force|-f) force=1 ;;
+      --print) ;;
+      *) die "用法：cccodroid tools-doc [--write [--force]]" ;;
+    esac
+  done
+  if [ "$write" -eq 0 ]; then
+    printf '%s\n' "$(render_tools_doc)"
+    return 0
+  fi
+  # 手工改过的清单不覆盖：生成的文件里有固定的一句话作标记。
+  if [ -f "$out" ] && [ "$force" -eq 0 ] && ! grep -q '由 `cccodroid tools-doc`' "$out" 2>/dev/null; then
+    warn "$out 不是 tools-doc 生成的（可能手工改过），不覆盖；确认要覆盖就加 --force"
+    return 1
+  fi
+  text="$(render_tools_doc)"
+  [ -n "$text" ] || die "生成的内容为空，不写入"
+  mkdir -p "$(dirname "$out")"
+  printf '%s\n' "$text" > "$out.tmp.$$"
+  mv -f "$out.tmp.$$" "$out"
+  log "已写入 $out（网关下一轮对话起读取）"
+}
+
+cmd_status() {
+  local running=0 state="" pid="" u=""
+  if use_systemd; then
+    state="$(systemctl --user is-active "$SERVICE_NAME" 2>/dev/null || true)"
+    if [ "$state" = "active" ]; then
+      running=1
+    fi
+    printf '服务：%s（systemd 用户服务）\n' "${state:-unknown}"
+  else
+    if pid="$(read_pid)" && pid_alive "$pid"; then
+      running=1
+      printf '服务：运行中（手动模式，pid %s）\n' "$pid"
+    else
+      printf '服务：未运行（手动模式）\n'
+    fi
+  fi
+
+  if port_open; then
+    running=1
+    printf '监听：127.0.0.1:%s 可连接\n' "$PORT"
+  else
+    printf '监听：127.0.0.1:%s 不可连接\n' "$PORT"
+  fi
+
+  if u="$(gateway_url)"; then
+    printf '界面：%s\n' "$u"
+  else
+    printf '界面：令牌尚未生成，启动后用 cccodroid url 获取\n'
+  fi
+
+  if use_systemd && [ -f "$UI_UNIT_PATH" ]; then
+    printf '窗口：%s（%s）\n' "$(systemctl --user is-active "$UI_SERVICE_NAME" 2>/dev/null || true)" "$UI_SERVICE_NAME"
+  fi
+
+  if [ "$running" -eq 1 ]; then
+    return 0
+  fi
+  return 1
+}
+
+cmd_url() {
+  local u=""
+  if ! u="$(gateway_url)"; then
+    die "还没有网关令牌（服务未启动过？）。先运行：cccodroid start"
+  fi
+  printf '%s\n' "$u"
+}
+
+cmd_open() {
+  local kiosk=0 a mode_args="" u="" qml_bin=""
+  for a in "$@"; do
+    case "$a" in
+      --kiosk|-k) kiosk=1 ;;
+      *) die "未知参数：$a（用法：cccodroid open [--kiosk]）" ;;
+    esac
+  done
+  [ "$kiosk" -eq 1 ] && mode_args="--kiosk"
+
+  if ! port_open; then
+    # 桌面图标直接走这里：没起来就先拉起。
+    cmd_start || true
+  fi
+  if ! u="$(gateway_url)"; then
+    die "还没拿到网关令牌；稍后再试：cccodroid url"
+  fi
+
+  # 1) 窗口服务（install.sh 渲染）：和直接起共用 bin/cccodroid-ui，也共用同一把单实例锁。
+  #    已经在运行就不再开第二个；全屏 / 窗口模式不同就重启切换。
+  if use_systemd && [ -f "$UI_UNIT_PATH" ] && [ -x "$CURRENT/bin/cccodroid-ui" ] && manager_has_display; then
+    local envf="${XDG_RUNTIME_DIR:-$PREFIX/run}/cccodroid-ui.env"
+    local want="CCCODROID_UI_ARGS=$mode_args" old=""
+    mkdir -p "$(dirname "$envf")"
+    [ -f "$envf" ] && old="$(cat "$envf" 2>/dev/null || true)"
+    printf '%s\n' "$want" > "$envf"
+    if systemctl --user is-active --quiet "$UI_SERVICE_NAME"; then
+      # 没有旧的模式记录（窗口是旧版 unit 起的）：按"已经在运行"处理，不打断。
+      if [ -z "$old" ] || [ "$old" = "$want" ]; then
+        log "窗口已在运行"
+        return 0
+      fi
+      systemctl --user restart "$UI_SERVICE_NAME"
+      log "已切换窗口模式（$([ "$kiosk" -eq 1 ] && echo 全屏 || echo 窗口)）"
+    else
+      systemctl --user start "$UI_SERVICE_NAME"
+      log "已打开原生窗口"
+    fi
+    sleep 1
+    if ! systemctl --user is-active --quiet "$UI_SERVICE_NAME"; then
+      warn "窗口服务没有保持运行；用 journalctl --user -u ${UI_SERVICE_NAME%.service} 查看原因"
+      return 1
+    fi
+    return 0
+  fi
+
+  # 2) 没有窗口服务（--no-service 或没渲染 unit）：直接用启动包装，单实例锁在包装里。
+  if qml_bin="$(find_qml)" && [ -x "$CURRENT/bin/cccodroid-ui" ] && { [ -n "${WAYLAND_DISPLAY:-}" ] || [ -n "${DISPLAY:-}" ]; }; then
+    local lock="${XDG_RUNTIME_DIR:-$PREFIX/run}/cccodroid-ui.lock"
+    mkdir -p "$(dirname "$lock")" "$PREFIX/logs"
+    # 先看一眼锁：被占着说明窗口已经在了，如实告诉用户，而不是假装又开了一个。
+    if ! ( exec 9>"$lock" && flock -n 9 ) 2>/dev/null; then
+      log "窗口已在运行"
+      return 0
+    fi
+    setsid nohup env CCCODROID_UI_ARGS="$mode_args" "$CURRENT/bin/cccodroid-ui" \
+      >>"$PREFIX/logs/ui.log" 2>&1 </dev/null &
+    log "已打开原生窗口（$qml_bin）"
+    return 0
+  fi
+
+  # 3) 没有 Qt 或不在图形会话里：退回系统浏览器。
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$u" >/dev/null 2>&1 &
+    log "已请求浏览器打开：$u"
+  else
+    log "没有图形会话或 qml 运行时；请手动打开：$u"
+  fi
+}
+
+cmd_logs() {
+  if use_systemd; then
+    exec journalctl --user -u "$SERVICE_NAME" -n 200 -f
+  fi
+  mkdir -p "$PREFIX/logs"
+  touch "$PREFIX/logs/gateway.out"
+  exec tail -n 200 -f "$PREFIX/logs/gateway.out"
+}
+
+cmd_version() {
+  local ver="unknown" target="unknown" node_bin="" node_ver="unknown" claude_ver="unknown"
+  local d name mark current_real=""
+  if [ -r "$CURRENT/VERSION" ]; then
+    ver="$(tr -d '[:space:]' < "$CURRENT/VERSION")"
+  fi
+  target="$(readlink "$CURRENT" 2>/dev/null || true)"
+  [ -n "$target" ] || target="$CURRENT"
+  current_real="$(readlink -f "$CURRENT" 2>/dev/null || true)"
+
+  for d in "$CURRENT/runtime/node/bin/node" "$CURRENT/runtime/node/node"; do
+    if [ -x "$d" ]; then
+      node_bin="$d"
+      break
+    fi
+  done
+  if [ -n "$node_bin" ]; then
+    node_ver="$("$node_bin" --version 2>/dev/null || true)"
+    [ -n "$node_ver" ] || node_ver="unknown"
+  fi
+  if [ -x "$CURRENT/runtime/claude" ]; then
+    claude_ver="$("$CURRENT/runtime/claude" --version 2>/dev/null | head -n 1 || true)"
+    [ -n "$claude_ver" ] || claude_ver="unknown"
+  fi
+
+  printf 'cccodroid %s\n' "$ver"
+  printf '前缀：%s\n' "$PREFIX"
+  printf '当前：%s -> %s\n' "$CURRENT" "$target"
+  printf 'Node：%s\n' "$node_ver"
+  printf 'Claude Code：%s\n' "$claude_ver"
+  printf '端口：%s\n' "$PORT"
+  printf '服务模式：%s\n' "$([ "$SERVICE_MODE" = "1" ] && echo systemd || echo 手动)"
+  printf '已安装版本：\n'
+  for d in "$PREFIX"/versions/*/; do
+    name="$(basename "$d")"
+    mark=""
+    if [ -n "$current_real" ] && [ "$(cd -P -- "$d" && pwd -P)" = "$current_real" ]; then
+      mark='（当前）'
+    elif [ -n "${CCCODROID_PREVIOUS:-}" ] && [ "$name" = "$CCCODROID_PREVIOUS" ]; then
+      mark='（上一个，可 rollback）'
+    fi
+    printf '  - %s%s\n' "$name" "$mark"
+  done
+}
+
+# ── 更新链路：来源、校验、验签 ───────────────────────────────────────────
+UPDATE_SIG_NS="cccodroid-release"
+
+update_conf_url() {
+  local f="$PREFIX/home/update.conf" v=""
+  [ -r "$f" ] || return 1
+  v="$(sed -n -E 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*//p' "$f" | head -n 1 | tr -d "\r\"'" | sed -E 's/[[:space:]]+$//')"
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
+}
+
+update_help() {
+  local u=""
+  u="$(update_conf_url || true)"
+  cat <<'EOF'
+更新 cccodroid。用法：
+  cccodroid update <来源> [--sha256 HEX] [--no-restart] [--force]
+  cccodroid update --check [--url 基址]
+
+来源可以是：
+  /路径/cccodroid-<版本>-linux-x86_64.tar.gz            本地文件（旁边有 .sha256 / .sig 就会核对）
+  -                                                       从标准输入读包
+  https://主机/路径/cccodroid-<版本>-linux-x86_64.tar.gz  下载（同位置的 .sha256 / .sig 一并取）
+  https://主机/路径/latest.json                          读发布清单，下载其中最新的包
+  [用户@]主机:/路径/cccodroid-<版本>-linux-x86_64.tar.gz  经 ssh 拉取（用 ~/.ssh/config，不弹密码框）
+
+校验：远程来源必须有校验和（--sha256，或同位置的 <包>.sha256）；当前已装版本带发布公钥
+（keys/allowed_signers）时，远程来源还必须带有效签名（<包>.sig），验不过就不装；明文 http://
+来源只有在有签名保护、或你用 --sha256 自己给出校验和时才接受。
+更新会新增 versions/<新版本>/ 并原子切换 current；home/ 与 workspace/ 原样保留，
+旧版本目录也保留：cccodroid rollback 一条命令退回，cccodroid prune 清理不要的旧版本。
+
+  --no-restart   只装不重启网关（新版本在下次重启网关时才生效）
+  --force        网关服务里有脱离进程树的程序时也照样更新（它们会被杀掉）
+EOF
+  if [ -n "$u" ]; then
+    printf '\n已配置更新地址（home/update.conf）：%s\n  cccodroid update --check             看有没有新版\n  cccodroid update %s/latest.json   更新到最新\n' "$u" "${u%/}"
+  else
+    printf '\n没配更新地址。可以在 %s/home/update.conf 里写一行 url=https://你的服务器/路径，之后用 cccodroid update --check。\n' "$PREFIX"
+  fi
+}
+
+installed_signers() { printf '%s/keys/allowed_signers' "$CURRENT"; }
+
+signer_fingerprint() {
+  ssh-keygen -lf "$CURRENT/keys/release.pub" 2>/dev/null | awk '{ print $2 }'
+}
+
+# 用「当前已装版本」带的公钥验签：不信新包自己带的公钥。
+verify_sig() {
+  command -v ssh-keygen >/dev/null 2>&1 || die "需要 ssh-keygen 才能验证签名"
+  ssh-keygen -Y verify -f "$(installed_signers)" -I "$UPDATE_SIG_NS" -n "$UPDATE_SIG_NS" -s "$2" < "$1" >/dev/null 2>&1
+}
+
+http_get() {
+  command -v curl >/dev/null 2>&1 || die "需要 curl 才能下载：$1"
+  local prog="-sS"
+  [ -t 2 ] && prog="-#"
+  curl -fL "$prog" --proto '=http,https' --proto-redir '=http,https' \
+    --connect-timeout 15 --max-time 3600 --max-filesize 2147483648 -o "$2" -- "$1"
+}
+
+http_get_quiet() {
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -fsSL --proto '=http,https' --proto-redir '=http,https' \
+    --connect-timeout 15 --max-time 60 --max-filesize 1048576 -o "$2" -- "$1" 2>/dev/null
+}
+
+# ssh_cat 主机 远端路径 输出文件
+ssh_cat() {
+  command -v ssh >/dev/null 2>&1 || die "需要 ssh 才能从远端拉取"
+  ssh -o BatchMode=yes -o ConnectTimeout=15 -- "$1" "cat -- $(shquote "$2")" > "$3"
+}
+
+# 校验和文件第一个字段（小写十六进制）；格式不对返回 1
+read_sha_file() {
+  local h=""
+  h="$(awk 'NF { print tolower($1); exit }' "$1" 2>/dev/null || true)"
+  [[ "$h" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$h"
+}
+
+json_field() {
+  local nb=""
+  nb="$(node_bin)" || die "找不到 Node 运行时，没法解析 latest.json"
+  "$nb" -e 'try { const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]]; process.stdout.write(typeof v === "string" ? v : "") } catch (e) { process.exit(3) }' "$1" "$2"
+}
+
+classify_source() {
+  local s="$1" ssh_re='^([A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9._-]*:.'
+  if [ "$s" = "-" ]; then
+    printf 'stdin'
+    return 0
+  fi
+  case "$s" in
+    http://*|https://*)
+      case "${s%%[?#]*}" in
+        *.json) printf 'manifest' ;;
+        *) printf 'url' ;;
+      esac
+      return 0 ;;
+  esac
+  if [ -e "$s" ]; then
+    printf 'file'
+  elif [[ "$s" =~ $ssh_re ]]; then
+    printf 'ssh'
+  else
+    printf 'file'
+  fi
+}
+
+cmd_update_check() {
+  local base="${1:-}" tmp="" ver="" file="" cur="" rel=""
+  [ -n "$base" ] || base="$(update_conf_url || true)"
+  if [ -z "$base" ]; then
+    cat <<EOF
+没有配置更新地址。两种办法：
+  cccodroid update --check --url https://你的服务器/路径
+  在 $PREFIX/home/update.conf 里写一行：url=https://你的服务器/路径
+地址下要有 latest.json（build-bundle.sh --publish-dir 会生成）。
+EOF
+    return 1
+  fi
+  base="${base%/latest.json}"
+  base="${base%/}"
+  [[ "$base" =~ ^https?://[^[:space:]]+$ ]] || die "更新地址必须以 http:// 或 https:// 开头：$base"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/cccodroid-latest.XXXXXX")"
+  if ! http_get_quiet "$base/latest.json" "$tmp"; then
+    rm -f "$tmp"
+    die "取不到 $base/latest.json"
+  fi
+  ver="$(json_field "$tmp" version || true)"
+  file="$(json_field "$tmp" file || true)"
+  rm -f "$tmp"
+  [[ "$ver" =~ $VERSION_RE ]] || die "latest.json 里的 version 不合规：${ver:-（空）}"
+  [[ "$file" =~ ^[A-Za-z0-9._+-]+\.tar\.gz$ ]] || die "latest.json 里的 file 不合规：${file:-（空）}"
+  cur="$(installed_version)"
+  rel="$(ver_cmp "$ver" "$cur")"
+  printf '当前版本：%s\n服务器上的最新版本：%s（%s）\n' "$cur" "$ver" "$file"
+  case "$rel" in
+    gt) printf '有新版本。更新：cccodroid update %s/latest.json\n' "$base" ;;
+    eq) printf '已经是最新版本。\n' ;;
+    *)  printf '服务器上的版本比当前的更旧，不用更新。\n' ;;
+  esac
+}
+
+cmd_update() {
+  local source="" check=0 base_url="" sha_arg="" no_restart=0
+  FORCE=0
+  while (($#)); do
+    case "$1" in
+      --force|-f) FORCE=1; shift ;;
+      --no-restart) no_restart=1; shift ;;
+      --check) check=1; shift ;;
+      --sha256) [ $# -ge 2 ] || die "--sha256 需要一个 64 位十六进制校验和"; sha_arg="$2"; shift 2 ;;
+      --sha256=*) sha_arg="${1#*=}"; shift ;;
+      --url) [ $# -ge 2 ] || die "--url 需要更新地址"; base_url="$2"; shift 2 ;;
+      --url=*) base_url="${1#*=}"; shift ;;
+      -h|--help) update_help; return 0 ;;
+      -) [ -z "$source" ] || die "只能指定一个来源"; source="-"; shift ;;
+      -*) die "未知参数：$1（cccodroid update --help 查看用法）" ;;
+      *) [ -z "$source" ] || die "只能指定一个来源"; source="$1"; shift ;;
+    esac
+  done
+  if [ "$check" -eq 1 ]; then
+    [ -z "$source" ] || die "--check 不接来源；要指定更新地址用 --url"
+    cmd_update_check "$base_url"
+    return
+  fi
+  [ -z "$base_url" ] || die "--url 只和 --check 一起用；要从某个地址更新，直接写 cccodroid update <地址>/latest.json"
+  if [ -z "$source" ]; then
+    update_help
+    return 0
+  fi
+
+  local kind="" tmp="" pkg="" expect="" sig="" remote=0 trusted_sha=0 scheme="" actual=""
+  local top="" dirs=() installer="" new_ver="" cur_ver="" host="" rpath="" base="" file="" mver="" msha="" msig=""
+  if [ -n "$sha_arg" ]; then
+    [[ "$sha_arg" =~ ^[0-9a-fA-F]{64}$ ]] || die "--sha256 要是 64 位十六进制"
+    expect="${sha_arg,,}"
+    trusted_sha=1
+  fi
+  kind="$(classify_source "$source")"
+  case "$kind" in
+    url|manifest)
+      scheme="${source%%:*}"
+      # 明文 http：校验和跟包来自同一台服务器，等于没有防篡改。要么有签名保护，要么校验和由你带外给出。
+      if [ "$scheme" = "http" ] && [ "$trusted_sha" -eq 0 ] && [ ! -f "$(installed_signers)" ]; then
+        die "http:// 是明文传输，校验和又来自同一台服务器，防不了篡改。改用 https:// 或 ssh 来源，或用 --sha256 从别处给出校验和"
+      fi ;;
+  esac
+  # 更新会重启网关：有脱离进程树的程序时先拦下来。下载之前就问，省得白下一趟。
+  if [ "$no_restart" -eq 0 ]; then
+    confirm_escapees "$FORCE" || return 1
+  fi
+
+  tmp="$(mktemp -d "$PREFIX/.update-tmp.XXXXXX")" || die "无法在 $PREFIX 下创建临时目录（没有写权限？）"
+  UPDATE_TMP="$tmp"
+  pkg="$tmp/pkg.tar.gz"
+
+  case "$kind" in
+    file)
+      [ -f "$source" ] || die "bundle 不存在：$source"
+      pkg="$source"
+      if [ -z "$expect" ] && [ -f "$source.sha256" ]; then
+        expect="$(read_sha_file "$source.sha256")" || die "校验和文件格式不对：$source.sha256"
+      fi
+      if [ -f "$source.sig" ]; then sig="$source.sig"; fi
+      ;;
+    stdin)
+      [ ! -t 0 ] || die "标准输入是终端：用管道传入，例如 cat 包.tar.gz | cccodroid update -"
+      cat > "$pkg"
+      [ -s "$pkg" ] || die "标准输入是空的"
+      ;;
+    url)
+      remote=1
+      log "下载 $source"
+      http_get "$source" "$pkg" || die "下载失败：$source"
+      if [ -z "$expect" ] && http_get_quiet "$source.sha256" "$tmp/pkg.sha256"; then
+        expect="$(read_sha_file "$tmp/pkg.sha256")" || die "取到的校验和文件格式不对：$source.sha256"
+      fi
+      if http_get_quiet "$source.sig" "$tmp/pkg.sig"; then sig="$tmp/pkg.sig"; fi
+      ;;
+    manifest)
+      remote=1
+      base="${source%/*}"
+      http_get_quiet "$source" "$tmp/latest.json" || die "取不到 $source"
+      mver="$(json_field "$tmp/latest.json" version || true)"
+      file="$(json_field "$tmp/latest.json" file || true)"
+      msha="$(json_field "$tmp/latest.json" sha256 || true)"
+      msig="$(json_field "$tmp/latest.json" sig || true)"
+      [[ "$mver" =~ $VERSION_RE ]] || die "latest.json 里的 version 不合规：${mver:-（空）}"
+      [[ "$file" =~ ^[A-Za-z0-9._+-]+\.tar\.gz$ ]] || die "latest.json 里的 file 不合规（必须是同目录下的 .tar.gz 文件名）：${file:-（空）}"
+      if [ -n "$msig" ] && ! [[ "$msig" =~ ^[A-Za-z0-9._+-]+$ ]]; then die "latest.json 里的 sig 不合规：$msig"; fi
+      if [ -z "$expect" ]; then
+        [[ "$msha" =~ ^[0-9a-fA-F]{64}$ ]] || die "latest.json 里缺少 64 位的 sha256"
+        expect="${msha,,}"
+      fi
+      log "最新版本 $mver：下载 $base/$file"
+      http_get "$base/$file" "$pkg" || die "下载失败：$base/$file"
+      if http_get_quiet "$base/${msig:-$file.sig}" "$tmp/pkg.sig"; then sig="$tmp/pkg.sig"; fi
+      ;;
+    ssh)
+      remote=1
+      host="${source%%:*}"
+      rpath="${source#*:}"
+      log "经 ssh 从 $host 拉取 $rpath"
+      ssh_cat "$host" "$rpath" "$pkg" || die "从 $host 拉取失败：$rpath"
+      [ -s "$pkg" ] || die "拉到的文件是空的：$host:$rpath"
+      if [ -z "$expect" ] && ssh_cat "$host" "$rpath.sha256" "$tmp/pkg.sha256" 2>/dev/null; then
+        expect="$(read_sha_file "$tmp/pkg.sha256")" || die "校验和文件格式不对：$host:$rpath.sha256"
+      fi
+      if ssh_cat "$host" "$rpath.sig" "$tmp/pkg.sig" 2>/dev/null && [ -s "$tmp/pkg.sig" ]; then sig="$tmp/pkg.sig"; fi
+      ;;
+  esac
+
+  actual="$(sha256sum -- "$pkg" | awk '{ print $1 }')"
+  if [ -n "$expect" ]; then
+    [ "$actual" = "$expect" ] || die "校验和不匹配（期望 ${expect:0:16}…，实际 ${actual:0:16}…）：更新包损坏或被改动，没有安装"
+    log "校验和一致（sha256 ${actual:0:16}…）"
+  elif [ "$remote" -eq 1 ]; then
+    die "远程来源必须提供校验和：加 --sha256 HEX，或在同一位置放 <包>.sha256"
+  else
+    warn "没有校验和（--sha256 或 .sha256 旁文件），跳过外层校验"
+  fi
+  if [ -f "$(installed_signers)" ]; then
+    if [ -n "$sig" ]; then
+      verify_sig "$pkg" "$sig" || die "签名验证失败：这个包不是当前版本所信任的发布密钥签的，没有安装"
+      log "签名验证通过（发布密钥 $(signer_fingerprint)）"
+    elif [ "$remote" -eq 1 ]; then
+      die "当前版本要求远程更新包带签名（<包>.sig），没有取到，没有安装"
+    else
+      warn "当前版本带发布公钥，但这个本地文件没有 .sig，来源未经验证"
+    fi
+  elif [ -n "$sig" ]; then
+    warn "更新包带签名，但当前已装版本没有公钥，没法验证"
+  fi
+
+  tar -tzf "$pkg" > "$tmp/list.txt" || die "不是有效的 tar.gz：$source"
+  if grep -Eq '(^/|(^|/)\.\.(/|$))' "$tmp/list.txt"; then
+    die "bundle 含绝对路径或 .. 路径，拒绝解压"
+  fi
+  mkdir -p "$tmp/x"
+  tar -xzf "$pkg" -C "$tmp/x" --no-same-owner
+  if [ -f "$tmp/x/VERSION" ]; then
+    top="$tmp/x"
+  else
+    dirs=("$tmp/x"/*)
+    if ((${#dirs[@]} != 1)) || [ ! -d "${dirs[0]:-}" ] || [ ! -f "${dirs[0]}/VERSION" ]; then
+      die "bundle 结构不正确（找不到 VERSION）"
+    fi
+    top="${dirs[0]}"
+  fi
+  installer="$top/install.sh"
+  [ -f "$installer" ] || die "bundle 里没有 install.sh"
+
+  new_ver="$(tr -d '[:space:]' < "$top/VERSION")"
+  cur_ver="$(installed_version)"
+  case "$(ver_cmp "$new_ver" "$cur_ver")" in
+    eq) log "新包就是当前版本（$cur_ver）：安装器会复用已安装的目录" ;;
+    lt) warn "新包版本 $new_ver 低于当前的 $cur_ver（这是降级）" ;;
+  esac
+
+  local inst_args=(--prefix "$PREFIX")
+  if [ "$no_restart" -eq 1 ]; then
+    grep -q -- '--no-restart' "$installer" || die "新包的安装器不支持 --no-restart，没有安装"
+    inst_args+=(--no-restart)
+  fi
+  log "使用新 bundle 的安装器更新（保留 home/ 与 workspace/）…"
+  bash "$installer" "${inst_args[@]}" "$top"
+  rm -rf "$tmp"
+  UPDATE_TMP=""
+  log "更新完成：$cur_ver → $new_ver。出问题可以用 cccodroid rollback 退回。"
+  if [ "$no_restart" -eq 1 ]; then
+    log "没有重启网关：新版本要等下一次 cccodroid restart 才生效。"
+  fi
+  if use_systemd && systemctl --user is-active --quiet "$UI_SERVICE_NAME" 2>/dev/null; then
+    log "原生窗口还在跑旧界面：systemctl --user restart ${UI_SERVICE_NAME%.service} 重开后才会换成新的。"
+  fi
+  cmd_version
+}
+
+cmd_rollback() {
+  parse_force "$@"
+  [ "${#REST[@]}" -eq 0 ] || die "用法：cccodroid rollback [--force]"
+  local prev="${CCCODROID_PREVIOUS:-}" cur="" target="" link=""
+  cur="$(basename -- "$(readlink "$CURRENT" 2>/dev/null || true)")"
+  if [ -z "$prev" ]; then
+    die "没有记录上一个版本，没法回滚（首次安装，或还没有更新过）"
+  fi
+  [[ "$prev" =~ $VERSION_RE ]] || die "安装清单里的上一版本号不合规：$prev"
+  target="$PREFIX/versions/$prev"
+  if [ ! -d "$target" ] || [ ! -f "$target/VERSION" ] || [ ! -x "$target/bin/cccodroid" ]; then
+    die "上一个版本的目录已经不在了：$target（被 prune 清理过？）"
+  fi
+  [ "$prev" != "$cur" ] || die "当前已经是 $prev，没有可回滚的"
+  confirm_escapees "$FORCE" || return 1
+
+  log "回滚：$cur → $prev"
+  link="$PREFIX/.current.$$"
+  rm -f "$link"
+  ln -s "versions/$prev" "$link"
+  if ! mv -Tf "$link" "$CURRENT"; then
+    rm -f "$link"
+    die "无法切换 current 软链"
+  fi
+  manifest_set CCCODROID_VERSION "$prev"
+  manifest_set CCCODROID_PREVIOUS "$cur"
+  CCCODROID_VERSION="$prev"
+  CCCODROID_PREVIOUS="$cur"
+
+  if gateway_running; then
+    cmd_restart --force
+  else
+    log "网关当前没在运行，没有重启；cccodroid start 启动后就是 $prev。"
+  fi
+  if use_systemd && systemctl --user is-active --quiet "$UI_SERVICE_NAME" 2>/dev/null; then
+    log "原生窗口还在跑旧界面：systemctl --user restart ${UI_SERVICE_NAME%.service} 重开后才会换成 $prev 的。"
+  fi
+  log "已回滚到 $prev；再运行一次 cccodroid rollback 可以回到 $cur。"
+}
+
+cmd_prune() {
+  local keep=2 dry=0 d="" name="" cur="" kb=0 freed=0 n_del=0 age_ok="" pid=""
+  local -a names=() protected=() kept=() doomed=() stale=() others=()
+  while (($#)); do
+    case "$1" in
+      --keep) [ $# -ge 2 ] || die "--keep 需要一个数字"; keep="$2"; shift 2 ;;
+      --keep=*) keep="${1#*=}"; shift ;;
+      --dry-run|-n) dry=1; shift ;;
+      *) die "用法：cccodroid prune [--keep N] [--dry-run]" ;;
+    esac
+  done
+  [[ "$keep" =~ ^[0-9]+$ ]] && [ "$keep" -ge 1 ] || die "--keep 要是大于等于 1 的整数"
+  cur="$(basename -- "$(readlink "$CURRENT" 2>/dev/null || true)")"
+  if [ -z "$cur" ] || [ ! -d "$PREFIX/versions/$cur" ]; then
+    die "无法确定当前版本（$CURRENT 不是有效的软链），拒绝清理"
+  fi
+  protected=("$cur")
+  if [ -n "${CCCODROID_PREVIOUS:-}" ] && [ "$CCCODROID_PREVIOUS" != "$cur" ] && [ -d "$PREFIX/versions/$CCCODROID_PREVIOUS" ]; then
+    protected+=("$CCCODROID_PREVIOUS")
+  fi
+  for d in "$PREFIX"/versions/*/; do
+    name="$(basename -- "$d")"
+    if [ -L "${d%/}" ] || ! [[ "$name" =~ $VERSION_RE ]]; then
+      others+=("$name")
+      continue
+    fi
+    names+=("$name")
+  done
+  if ((${#names[@]})); then
+    mapfile -t names < <(printf '%s\n' "${names[@]}" | sort -rV)
+  fi
+  kept=("${protected[@]}")
+  for name in ${names[@]+"${names[@]}"}; do
+    case " ${protected[*]} " in *" $name "*) continue ;; esac
+    if ((${#kept[@]} < keep)); then
+      kept+=("$name")
+    else
+      doomed+=("$name")
+    fi
+  done
+
+  printf '版本目录（%s/versions）：\n' "$PREFIX"
+  for name in ${names[@]+"${names[@]}"}; do
+    kb="$(du -sk "$PREFIX/versions/$name" 2>/dev/null | cut -f1 || true)"
+    if [ "$name" = "$cur" ]; then
+      printf '  %-10s %8s  当前（保留）\n' "$name" "$(human_kb "${kb:-0}")"
+    elif [ "$name" = "${CCCODROID_PREVIOUS:-}" ]; then
+      printf '  %-10s %8s  上一个版本（保留）\n' "$name" "$(human_kb "${kb:-0}")"
+    elif case " ${doomed[*]-} " in *" $name "*) true ;; *) false ;; esac; then
+      printf '  %-10s %8s  %s\n' "$name" "$(human_kb "${kb:-0}")" "$([ "$dry" -eq 1 ] && echo '将删除（--dry-run）' || echo '删除')"
+      freed=$((freed + ${kb:-0}))
+    else
+      printf '  %-10s %8s  保留（--keep %s）\n' "$name" "$(human_kb "${kb:-0}")" "$keep"
+    fi
+  done
+  for name in ${others[@]+"${others[@]}"}; do
+    printf '  %-10s %8s  不是版本目录，不动\n' "$name" "-"
+  done
+
+  # 上次更新被中断留下的临时目录：两小时没动过、且没有进程在用才算残留。
+  for d in "$PREFIX"/.update-tmp.* "$PREFIX"/.staging.*; do
+    [ -d "$d" ] || continue
+    age_ok="$(find "$d" -maxdepth 0 -mmin +120 2>/dev/null || true)"
+    [ -n "$age_ok" ] || continue
+    pid="${d##*.}"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then continue; fi
+    stale+=("$d")
+  done
+  if ((${#stale[@]})); then
+    printf '残留的临时目录：\n'
+    for d in "${stale[@]}"; do
+      kb="$(du -sk "$d" 2>/dev/null | cut -f1 || true)"
+      printf '  %s  %s  %s\n' "$(basename -- "$d")" "$(human_kb "${kb:-0}")" "$([ "$dry" -eq 1 ] && echo '将删除（--dry-run）' || echo '删除')"
+      freed=$((freed + ${kb:-0}))
+    done
+  fi
+
+  for d in "$PREFIX"/backup-*/; do
+    [ -d "$d" ] || continue
+    kb="$(du -sk "$d" 2>/dev/null | cut -f1 || true)"
+    printf '备份目录 %s（%s）：不会动，确认不要了自己删。\n' "$(basename -- "${d%/}")" "$(human_kb "${kb:-0}")"
+  done
+
+  if ((${#doomed[@]} == 0 && ${#stale[@]} == 0)); then
+    log "没有要清理的"
+    return 0
+  fi
+  if [ "$dry" -eq 1 ]; then
+    log "（--dry-run：什么也没删）去掉 --dry-run 会释放约 $(human_kb "$freed")"
+    return 0
+  fi
+  for name in ${doomed[@]+"${doomed[@]}"}; do
+    rm -rf -- "$PREFIX/versions/$name"
+    n_del=$((n_del + 1))
+  done
+  for d in ${stale[@]+"${stale[@]}"}; do
+    rm -rf -- "$d"
+    n_del=$((n_del + 1))
+  done
+  log "已清理 $n_del 项，释放约 $(human_kb "$freed")"
+}
+
+# ── doctor：一条命令体检 ───────────────────────────────────────────────
+DOC_ROWS=()
+DOC_OK=0
+DOC_INFO=0
+DOC_WARN=0
+DOC_FAIL=0
+GW_ACTIVE=0
+
+# doc_add 级别(ok|info|warn|fail) id 标题 详情 [修法]
+doc_add() {
+  local level="$1" id="$2" title="$3" detail="${4:--}" fix="${5:-}"
+  detail="${detail//$'\t'/ }"
+  detail="${detail//$'\n'/ }"
+  fix="${fix//$'\t'/ }"
+  fix="${fix//$'\n'/ }"
+  DOC_ROWS+=("$level"$'\t'"$id"$'\t'"$title"$'\t'"$detail"$'\t'"$fix")
+  case "$level" in
+    ok) DOC_OK=$((DOC_OK + 1)) ;;
+    info) DOC_INFO=$((DOC_INFO + 1)) ;;
+    warn) DOC_WARN=$((DOC_WARN + 1)) ;;
+    fail) DOC_FAIL=$((DOC_FAIL + 1)) ;;
+  esac
+}
+
+pid_is_gateway() {
+  local pid="$1" main="" p=""
+  if use_systemd; then
+    main="$(systemctl --user show -p MainPID --value "$SERVICE_NAME" 2>/dev/null || true)"
+    if [ -n "$main" ] && [ "$main" = "$pid" ]; then return 0; fi
+    grep -qF "$SERVICE_NAME" "/proc/$pid/cgroup" 2>/dev/null && return 0
+    return 1
+  fi
+  p="$(read_pid || true)"
+  [ -n "$p" ] && [ "$p" = "$pid" ]
+}
+
+port_owners() {
+  command -v ss >/dev/null 2>&1 || return 0
+  ss -H -ltnp "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -un
+}
+
+doc_install() {
+  local ver="" mver="${CCCODROID_VERSION:-}" tgt="" unit_bad=""
+  if [ ! -L "$CURRENT" ] || [ ! -d "$CURRENT" ]; then
+    doc_add fail install "安装" "current 软链不存在或指向的目录没了：$CURRENT" "重新运行 install.sh，或 cccodroid rollback"
+    return 0
+  fi
+  ver="$(installed_version)"
+  tgt="$(readlink "$CURRENT")"
+  if [ -n "$mver" ] && [ "$mver" != "$ver" ]; then
+    doc_add warn install "安装" "install.env 记的版本是 $mver，current 实际是 $ver" "重新运行 install.sh 让清单与实际一致"
+    return 0
+  fi
+  if use_systemd && ! grep -qF "$PREFIX/current/bin/cccodroid-gateway" "$UNIT_PATH" 2>/dev/null; then
+    unit_bad=1
+  fi
+  if [ -n "$unit_bad" ]; then
+    doc_add warn install "安装" "版本 $ver，但 systemd 单元 $UNIT_PATH 没有指向这个前缀的 current" "重新运行 install.sh 重新生成单元"
+  else
+    doc_add ok install "安装" "版本 $ver（$tgt）${CCCODROID_PREVIOUS:+，上一个版本 $CCCODROID_PREVIOUS}"
+  fi
+}
+
+doc_gateway() {
+  local state="" main="" restarts="" since="" pid=""
+  if use_systemd; then
+    state="$(systemctl --user is-active "$SERVICE_NAME" 2>/dev/null || true)"
+    main="$(systemctl --user show -p MainPID --value "$SERVICE_NAME" 2>/dev/null || true)"
+    restarts="$(systemctl --user show -p NRestarts --value "$SERVICE_NAME" 2>/dev/null || true)"
+    since="$(systemctl --user show -p ActiveEnterTimestamp --value "$SERVICE_NAME" 2>/dev/null || true)"
+    case "$state" in
+      active)
+        GW_ACTIVE=1
+        if [[ "${restarts:-0}" =~ ^[0-9]+$ ]] && [ "${restarts:-0}" -ge 3 ]; then
+          doc_add warn gateway "网关服务" "active，但已自动重启 $restarts 次（主进程 $main，$since 起）" "cccodroid logs 看崩溃原因"
+        else
+          doc_add ok gateway "网关服务" "active（主进程 $main，$since 起）"
+        fi ;;
+      activating)
+        doc_add warn gateway "网关服务" "正在启动中（activating）" "稍等几秒再体检；一直这样就 cccodroid logs" ;;
+      failed)
+        doc_add fail gateway "网关服务" "failed（启动失败或反复崩溃）" "cccodroid logs；systemctl --user status $SERVICE_NAME" ;;
+      *)
+        doc_add fail gateway "网关服务" "没有运行（$state）" "cccodroid start" ;;
+    esac
+    return 0
+  fi
+  if [ "$SERVICE_MODE" = "1" ] && [ ! -f "$UNIT_PATH" ]; then
+    doc_add warn gateway "网关服务" "安装清单要求用 systemd 服务，但单元文件不存在：$UNIT_PATH" "重新运行 install.sh"
+    return 0
+  fi
+  pid="$(read_pid || true)"
+  if [ -n "$pid" ] && pid_alive "$pid"; then
+    GW_ACTIVE=1
+    doc_add ok gateway "网关服务" "运行中（手动模式，pid $pid）"
+  elif port_open; then
+    doc_add warn gateway "网关服务" "手动模式，没有 pid 文件，但端口 $PORT 有人在应答" "cccodroid status；确认是不是别的程序占了端口"
+  else
+    doc_add fail gateway "网关服务" "没有运行（手动模式）" "cccodroid start"
+  fi
+}
+
+doc_ports() {
+  local a="" ok_addrs="" bad_addrs="" owners="" pid="" foreign="" cmd=""
+  for a in 127.0.0.1 127.0.0.2; do
+    if (exec 3<>"/dev/tcp/$a/$PORT") 2>/dev/null; then
+      ok_addrs+="${ok_addrs:+、}$a"
+    else
+      bad_addrs+="${bad_addrs:+、}$a"
+    fi
+  done
+  owners="$(port_owners || true)"
+  for pid in $owners; do
+    if pid_is_gateway "$pid"; then continue; fi
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-60 || true)"
+    foreign+="${foreign:+；}pid $pid ${cmd:-?}"
+  done
+  if [ -n "$foreign" ]; then
+    doc_add warn ports "端口 $PORT" "有不属于本前缀网关的进程在监听：$foreign" "结束那个进程，或换端口（install.sh --port）"
+  elif [ -z "$bad_addrs" ]; then
+    doc_add ok ports "端口 $PORT" "127.0.0.1 与 127.0.0.2 都在监听${owners:+（进程 ${owners//$'\n'/、}）}"
+  elif [ -z "$ok_addrs" ]; then
+    if [ "$GW_ACTIVE" = "1" ]; then
+      doc_add fail ports "端口 $PORT" "网关在运行，但 127.0.0.1 与 127.0.0.2 的 $PORT 都连不上" "cccodroid logs 看启动报错；cccodroid restart"
+    else
+      doc_add info ports "端口 $PORT" "没有监听（网关没在运行）"
+    fi
+  else
+    doc_add warn ports "端口 $PORT" "只有 $ok_addrs 在监听，$bad_addrs 连不上（界面走 127.0.0.2）" "cccodroid restart"
+  fi
+}
+
+doc_api() {
+  local token="" code=""
+  if [ "$GW_ACTIVE" != "1" ] || ! port_open; then
+    doc_add info api "接口自检" "网关没有运行，跳过"
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    doc_add info api "接口自检" "没有 curl，跳过"
+    return 0
+  fi
+  if [ ! -r "$TOKEN_FILE" ]; then
+    doc_add fail api "接口自检" "读不到令牌文件 $TOKEN_FILE" "cccodroid restart 会重新生成"
+    return 0
+  fi
+  token="$(tr -d '[:space:]' < "$TOKEN_FILE" 2>/dev/null || true)"
+  if ! [[ "$token" =~ ^[0-9a-fA-F]{32,}$ ]]; then
+    doc_add fail api "接口自检" "令牌文件内容不是 32 位以上的十六进制" "删除 $TOKEN_FILE 后 cccodroid restart 会重新生成"
+    return 0
+  fi
+  # 令牌只走标准输入交给 curl，不出现在命令行（ps 看得到命令行）。
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -K - 2>/dev/null <<EOF || true
+url = "http://127.0.0.1:$PORT/api/state"
+header = "X-CC-Token: $token"
+EOF
+)"
+  case "$code" in
+    200) doc_add ok api "接口自检" "GET /api/state → 200（令牌有效）" ;;
+    401|403) doc_add fail api "接口自检" "GET /api/state → $code：令牌被网关拒绝" "令牌文件与运行中的网关不一致，cccodroid restart" ;;
+    000|"") doc_add fail api "接口自检" "GET /api/state 没有响应（5 秒超时）" "cccodroid logs 看网关是不是卡住了" ;;
+    *) doc_add warn api "接口自检" "GET /api/state → $code" "cccodroid logs" ;;
+  esac
+}
+
+doc_cgroup() {
+  local list="" n=0 brief=""
+  if ! use_systemd; then
+    doc_add info cgroup "进程归属" "手动模式，不检查（只有 systemd 服务模式下，网关的 cgroup 才会连带这些程序）"
+    return 0
+  fi
+  list="$(gateway_escapees || true)"
+  if [ -z "$list" ]; then
+    doc_add ok cgroup "进程归属" "网关服务里没有脱离进程树的程序"
+    return 0
+  fi
+  n="$(printf '%s\n' "$list" | wc -l | tr -d ' ')"
+  brief="$(printf '%s\n' "$list" | head -n 3 | awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? "；" : ""), $1, substr($2, 1, 40) }')"
+  doc_add warn cgroup "进程归属" "网关服务里有 $n 个脱离进程树的程序：$brief…" "停止 / 重启 / 更新会把它们杀掉：用 cc-detach 重新启动它们（cccodroid procs 看完整列表）"
+}
+
+doc_journal() {
+  local usage="" sysu="" lines=0 tmpf="" count=0 top="" pct=0 ub=0 detail="" lvl="ok" fix=""
+  if ! command -v journalctl >/dev/null 2>&1; then
+    doc_add info journal "日志" "没有 journalctl，跳过"
+    return 0
+  fi
+  usage="$(journalctl --user --disk-usage 2>/dev/null | sed -n -E 's/.*take up ([0-9.]+[KMGT]?).*/\1/p' | head -n 1 || true)"
+  sysu="$(journalctl --disk-usage 2>/dev/null | sed -n -E 's/.*take up ([0-9.]+[KMGT]?).*/\1/p' | head -n 1 || true)"
+  detail="用户日志占 ${usage:-?}${sysu:+，系统日志占 $sysu}"
+  if [ -n "$usage" ]; then
+    ub="$(size_to_bytes "$usage")"
+    if [ "$ub" -gt 419430400 ]; then
+      lvl=warn
+      fix="journalctl --user --vacuum-size=200M"
+    fi
+  fi
+  if use_systemd; then
+    tmpf="$(mktemp "${TMPDIR:-/tmp}/cccodroid-doctor.XXXXXX")"
+    journalctl --user -u "$SERVICE_NAME" --since "10 min ago" -n 20000 -o cat --no-pager -q > "$tmpf" 2>/dev/null || true
+    lines="$(wc -l < "$tmpf" | tr -d ' ')"
+    detail+="；网关最近 10 分钟 $lines 行"
+    if [ "${lines:-0}" -gt 600 ]; then
+      read -r count top < <(cut -c1-14 "$tmpf" | sort | uniq -c | sort -rn | head -n 1) || true
+      pct=$(( ${count:-0} * 100 / lines ))
+      lvl=warn
+      detail+="，其中 $pct% 以「${top:-?}」开头"
+      fix="日志被某个程序淹没（journalctl --user -u ${SERVICE_NAME%.service} -n 30 看是谁在写）；用 cc-detach 重新启动它，输出就进它自己的单元，不再灌进网关日志"
+    fi
+    rm -f "$tmpf"
+  fi
+  doc_add "$lvl" journal "日志" "$detail" "$fix"
+}
+
+# 路径 允许的最宽权限(八进制) 说明 → 有问题时打印一句话（句末带分号）
+perm_problem() {
+  local p="$1" want="$2" what="$3" mode="" owner=""
+  [ -e "$p" ] || return 0
+  mode="$(stat -c '%a' "$p" 2>/dev/null || true)"
+  owner="$(stat -c '%u' "$p" 2>/dev/null || true)"
+  if [ -n "$owner" ] && [ "$owner" != "$(id -u)" ]; then
+    printf '%s 的属主是 uid %s、不是当前用户；' "$what" "$owner"
+  fi
+  if [ -n "$mode" ] && (( (8#$mode & ~8#$want) != 0 )); then
+    printf '%s 权限是 %s、应不宽于 %s；' "$what" "$mode" "$want"
+  fi
+}
+
+doc_perms() {
+  local bad_tok="" bad_other=""
+  if [ ! -e "$TOKEN_FILE" ]; then
+    if [ "$GW_ACTIVE" = "1" ]; then
+      doc_add fail perms "权限" "网关在运行，但令牌文件不存在：$TOKEN_FILE" "cccodroid restart"
+    else
+      doc_add info perms "权限" "令牌文件还没生成（网关没启动过）"
+    fi
+    return 0
+  fi
+  bad_tok+="$(perm_problem "$TOKEN_FILE" 600 "令牌文件")"
+  bad_other+="$(perm_problem "$PREFIX/home" 700 "home/ 目录")"
+  bad_other+="$(perm_problem "$PREFIX/install.env" 600 "install.env")"
+  bad_other+="$(perm_problem "$PREFIX/home/ccapp-providers.json" 600 "接口密钥文件 ccapp-providers.json")"
+  bad_tok="${bad_tok%；}"
+  bad_other="${bad_other%；}"
+  if [ -n "$bad_tok" ]; then
+    doc_add fail perms "权限" "$bad_tok${bad_other:+；$bad_other}" "chmod 700 $PREFIX/home; chmod 600 $TOKEN_FILE（令牌可能已被别的用户读到：删掉令牌文件后 cccodroid restart 轮换）"
+  elif [ -n "$bad_other" ]; then
+    doc_add warn perms "权限" "$bad_other" "chmod 700 $PREFIX/home；chmod 600 对应的文件"
+  else
+    doc_add ok perms "权限" "home/ 为 700、令牌文件为 600，属主是当前用户"
+  fi
+}
+
+doc_qt() {
+  local qml="" ver="" web="" d="" major=0 minor=0
+  qml="$(find_qml || true)"
+  if [ -z "$qml" ]; then
+    doc_add warn qt "Qt6 窗口" "找不到 qml 运行时（/usr/lib/qt6/bin/qml）；cccodroid open 会退回系统浏览器" "SteamOS 自带；其他发行版装 qt6-declarative 与 qt6-webengine"
+    return 0
+  fi
+  ver="$("$qml" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1 || true)"
+  if [ -z "$ver" ] && command -v pacman >/dev/null 2>&1; then
+    ver="$(pacman -Q qt6-declarative 2>/dev/null | awk '{ print $2 }' | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)"
+  fi
+  for d in /usr/lib/qt6/qml/QtWebEngine /usr/lib64/qt6/qml/QtWebEngine /usr/lib/x86_64-linux-gnu/qt6/qml/QtWebEngine; do
+    if [ -d "$d" ]; then web="$d"; break; fi
+  done
+  if [ -z "$web" ]; then
+    doc_add warn qt "Qt6 窗口" "有 qml（${ver:-版本未知}），但没有 QtWebEngine 的 QML 模块；窗口起不来" "装 qt6-webengine"
+    return 0
+  fi
+  if [ -z "$ver" ]; then
+    doc_add info qt "Qt6 窗口" "qml 在 $qml，QtWebEngine 模块在 $web，Qt 版本没探测出来"
+    return 0
+  fi
+  major="${ver%%.*}"
+  minor="${ver#*.}"
+  minor="${minor%%.*}"
+  if [ "$major" -lt 6 ] || { [ "$major" -eq 6 ] && [ "$minor" -lt 8 ]; }; then
+    doc_add warn qt "Qt6 窗口" "Qt $ver 低于 6.8：窗口里用了 6.8 起的权限接口（剪贴板放行、文件选择）会失效" "升级 qt6-webengine / qt6-declarative 到 6.8 以上"
+  else
+    doc_add ok qt "Qt6 窗口" "Qt $ver，QtWebEngine 模块在 $web"
+  fi
+}
+
+doc_display() {
+  local cur=""
+  [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] && cur="${WAYLAND_DISPLAY:+WAYLAND_DISPLAY=$WAYLAND_DISPLAY }${DISPLAY:+DISPLAY=$DISPLAY}"
+  if systemd_ok && manager_has_display; then
+    doc_add ok display "显示环境" "用户服务管理器里有显示变量，cccodroid open 能起窗口${cur:+（当前终端：$cur）}"
+  elif [ -n "$cur" ]; then
+    doc_add warn display "显示环境" "当前终端有显示变量（$cur），但用户服务管理器里没有；窗口服务起不来" "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XAUTHORITY（在桌面会话里执行）"
+  else
+    doc_add info display "显示环境" "没有图形会话的显示变量（SSH 登录且桌面没开？）；cccodroid open 会退回浏览器"
+  fi
+}
+
+doc_window() {
+  local st=""
+  if use_systemd && [ -f "$UI_UNIT_PATH" ]; then
+    st="$(systemctl --user is-active "$UI_SERVICE_NAME" 2>/dev/null || true)"
+    case "$st" in
+      active) doc_add ok window "原生窗口" "窗口服务运行中" ;;
+      inactive) doc_add ok window "原生窗口" "窗口服务未运行（需要时 cccodroid open）" ;;
+      failed) doc_add warn window "原生窗口" "窗口服务上次失败了" "journalctl --user -u ${UI_SERVICE_NAME%.service} -n 50" ;;
+      *) doc_add info window "原生窗口" "窗口服务状态：${st:-未知}" ;;
+    esac
+  else
+    doc_add info window "原生窗口" "没有窗口服务（--no-service 安装或旧版本）；cccodroid open 直接启动窗口"
+  fi
+  if [ ! -x "$CURRENT/bin/cccodroid-ui" ]; then
+    doc_add warn window_script "窗口启动脚本" "$CURRENT/bin/cccodroid-ui 不存在或不可执行" "重新运行 install.sh"
+  fi
+}
+
+disk_level() {
+  local kb="${1:-0}"
+  if [ "$kb" -lt 512000 ]; then printf 'fail'
+  elif [ "$kb" -lt 2097152 ]; then printf 'warn'
+  else printf 'ok'
+  fi
+}
+
+doc_disk() {
+  local home_kb="" root_kb="" home_dev="" root_dev="" lvl_h="ok" lvl_r="ok" lvl="ok" detail="" fix=""
+  home_kb="$(df -Pk "$PREFIX" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+  root_kb="$(df -Pk / 2>/dev/null | awk 'NR == 2 { print $4 }')"
+  home_dev="$(df -Pk "$PREFIX" 2>/dev/null | awk 'NR == 2 { print $1 }')"
+  root_dev="$(df -Pk / 2>/dev/null | awk 'NR == 2 { print $1 }')"
+  if ! [[ "$home_kb" =~ ^[0-9]+$ ]]; then
+    doc_add info disk "磁盘" "df 取不到 $PREFIX 所在分区的剩余空间"
+    return 0
+  fi
+  lvl_h="$(disk_level "$home_kb")"
+  detail="数据所在分区剩余 $(human_kb "$home_kb")"
+  lvl="$lvl_h"
+  if [[ "$root_kb" =~ ^[0-9]+$ ]] && [ "$root_dev" != "$home_dev" ]; then
+    lvl_r="$(disk_level "$root_kb")"
+    detail+="；/ 剩余 $(human_kb "$root_kb")"
+    # SteamOS 的根分区常年只剩几百 MB 到 1 GB，而且 cccodroid 不往里写：低于 500 MB 才警告（不判失败），
+    # 500 MB 到 2 GB 之间只在详情里列出，免得体检永远带一条警告。
+    if [ "$lvl_r" = "fail" ] && [ "$lvl" = "ok" ]; then lvl=warn; fi
+  fi
+  if [ "$lvl" != "ok" ]; then
+    fix="清理空间：cccodroid prune 删旧版本；du -sh $PREFIX/* 看谁占得多（阈值：低于 2 GB 警告、低于 500 MB 失败）"
+  fi
+  doc_add "$lvl" disk "磁盘" "$detail" "$fix"
+}
+
+doc_versions() {
+  local d="" n=0 total_kb=0 kb=0 names="" stale=0 age_ok="" pid=""
+  for d in "$PREFIX"/versions/*/; do
+    n=$((n + 1))
+    kb="$(du -sk "$d" 2>/dev/null | cut -f1 || true)"
+    total_kb=$((total_kb + ${kb:-0}))
+    names+="${names:+、}$(basename -- "$d")"
+  done
+  for d in "$PREFIX"/.update-tmp.* "$PREFIX"/.staging.*; do
+    [ -d "$d" ] || continue
+    age_ok="$(find "$d" -maxdepth 0 -mmin +120 2>/dev/null || true)"
+    [ -n "$age_ok" ] || continue
+    pid="${d##*.}"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then continue; fi
+    stale=$((stale + 1))
+  done
+  if [ "$n" -gt 2 ]; then
+    doc_add warn versions "旧版本" "versions/ 下有 $n 个版本（$names），共 $(human_kb "$total_kb")" "cccodroid prune 只留当前和上一个版本"
+  elif [ "$stale" -gt 0 ]; then
+    doc_add warn versions "旧版本" "有 $stale 个更新中断留下的临时目录" "cccodroid prune 清理"
+  else
+    doc_add ok versions "旧版本" "$n 个版本（$names），共 $(human_kb "$total_kb")"
+  fi
+}
+
+doc_claude() {
+  local out="" nb="" nv=""
+  if [ ! -x "$CURRENT/runtime/claude" ]; then
+    doc_add fail claude "Claude Code" "$CURRENT/runtime/claude 不存在或不可执行" "运行 cccodroid install-claude 补装，或用 --from 指定已有的 claude 二进制"
+    return 0
+  fi
+  out="$(timeout 10 "$CURRENT/runtime/claude" --version 2>&1 | head -n 1 || true)"
+  nb="$(node_bin || true)"
+  if [ -n "$nb" ]; then nv="$("$nb" --version 2>/dev/null | head -n 1 || true)"; fi
+  if [ -z "$out" ]; then
+    doc_add fail claude "Claude Code" "claude --version 没有输出（10 秒内）" "确认 $CURRENT/runtime/claude 是 x86_64 的可执行文件"
+  elif [ -z "$nv" ]; then
+    doc_add fail claude "Claude Code" "claude：$out，但 Node 运行时跑不起来" "重新运行 install.sh"
+  else
+    doc_add ok claude "Claude Code" "claude $out，Node $nv"
+  fi
+}
+
+doc_linger() {
+  local l=""
+  if ! command -v loginctl >/dev/null 2>&1; then
+    doc_add info linger "后台常驻" "没有 loginctl，跳过"
+    return 0
+  fi
+  l="$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"
+  case "$l" in
+    yes) doc_add ok linger "后台常驻" "Linger=yes：没有人登录时网关也继续运行" ;;
+    no) doc_add info linger "后台常驻" "Linger=no：用户的所有会话都注销后，网关服务会跟着停（锁屏、休眠不算注销）" "要无人登录也保持运行：loginctl enable-linger $(id -un)" ;;
+    *) doc_add info linger "后台常驻" "取不到 Linger 状态" ;;
+  esac
+}
+
+doc_print_text() {
+  local row="" level="" id="" title="" detail="" fix="" tag=""
+  printf 'cccodroid 体检　版本 %s　前缀 %s\n\n' "$(installed_version)" "$PREFIX"
+  for row in "${DOC_ROWS[@]}"; do
+    IFS=$'\t' read -r level id title detail fix <<< "$row"
+    case "$level" in
+      ok) tag='[ OK ]' ;;
+      info) tag='[INFO]' ;;
+      warn) tag='[WARN]' ;;
+      *) tag='[FAIL]' ;;
+    esac
+    printf '%s %s：%s\n' "$tag" "$title" "$detail"
+    if [ -n "$fix" ]; then printf '       修法：%s\n' "$fix"; fi
+  done
+  printf '\n汇总：%d 项正常，%d 项提示，%d 项警告，%d 项失败\n' "$DOC_OK" "$DOC_INFO" "$DOC_WARN" "$DOC_FAIL"
+}
+
+json_esc() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\010\013-\037' | tr '\n\t' '  '
+}
+
+doc_print_json() {
+  local code="$1" row="" level="" id="" title="" detail="" fix="" first=1
+  printf '{"version":"%s","prefix":"%s","exit":%d,"summary":{"ok":%d,"info":%d,"warn":%d,"fail":%d},"checks":[' \
+    "$(json_esc "$(installed_version)")" "$(json_esc "$PREFIX")" "$code" "$DOC_OK" "$DOC_INFO" "$DOC_WARN" "$DOC_FAIL"
+  for row in "${DOC_ROWS[@]}"; do
+    IFS=$'\t' read -r level id title detail fix <<< "$row"
+    if [ "$first" -eq 0 ]; then printf ','; fi
+    first=0
+    printf '{"id":"%s","level":"%s","title":"%s","detail":"%s","fix":"%s"}' \
+      "$(json_esc "$id")" "$level" "$(json_esc "$title")" "$(json_esc "$detail")" "$(json_esc "$fix")"
+  done
+  printf ']}\n'
+}
+
+cmd_doctor() {
+  local json=0 a="" code=0
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -h|--help)
+        printf '用法：cccodroid doctor [--json]\n一条命令体检（只读，不改任何东西）。退出码：0 全部正常，1 有警告，2 有失败。\n--json 输出机器可读结果。\n'
+        return 0 ;;
+      *) die "用法：cccodroid doctor [--json]" ;;
+    esac
+  done
+  # 体检要走完所有项：某一项里的命令失败不能让整个脚本中途退出。
+  set +e
+  doc_install
+  doc_gateway
+  doc_ports
+  doc_api
+  doc_cgroup
+  doc_journal
+  doc_perms
+  doc_qt
+  doc_display
+  doc_window
+  doc_disk
+  doc_versions
+  doc_claude
+  doc_linger
+  set -e
+  if [ "$DOC_FAIL" -gt 0 ]; then
+    code=2
+  elif [ "$DOC_WARN" -gt 0 ]; then
+    code=1
+  fi
+  if [ "$json" -eq 1 ]; then
+    doc_print_json "$code"
+  else
+    doc_print_text
+  fi
+  return "$code"
+}
+
+# ── Steam 游戏模式入口 ─────────────────────────────────────────────────
+cmd_steam() {
+  local helper="$CURRENT/bin/cccodroid-steam"
+  [ -f "$helper" ] || die "这个版本没有 Steam 入口脚本（bin/cccodroid-steam）"
+  command -v python3 >/dev/null 2>&1 || die "steam 子命令需要 python3"
+  [ $# -ge 1 ] || die "用法：cccodroid steam add|remove|status [--user ID] [--dry-run] [--restart-steam]"
+  exec python3 -I "$helper" --prefix "$PREFIX" --launcher "$CURRENT/bin/cccodroid-steam-launch" "$@"
+}
+
+
+# ── 会话迁移：import / export ─────────────────────────────────────────
+# 会话包是网关自己导出的 zip（manifest.json + sessions/<id>.jsonl …），导入由网关做：cwd 改写成本机工作区、
+# 同号已存在的跳过、回收站里同号的先恢复、标题和章节档案一起带进来。这里负责取包、传包、汇总，
+# 并把导入了哪些会话记到 home/imports/，后悔了可以 --undo（进回收站，仍可恢复）。
+import_help() {
+  cat <<'EOF'
+用法：cccodroid import <来源>
+      cccodroid import --undo <清单文件>
+
+来源：本地 .zip、-（标准输入）、http(s):// 的 .zip、[用户@]主机:/路径.zip（经 ssh 拉取）。
+会话包用 cccodroid export 生成（在别的机器上也行），或界面里「导出会话」。
+导入的会话 cwd 一律改成本机工作区；同号的跳过；每次导入的会话号记在 home/imports/import-<时间>.json，
+--undo 把它们放进回收站（界面的回收站里还能恢复）。
+EOF
+}
+
+gw_token() {
+  [ -r "$TOKEN_FILE" ] || die "读不到令牌文件 $TOKEN_FILE（网关还没启动过？）"
+  local t=""
+  t="$(tr -d '[:space:]' < "$TOKEN_FILE")" || die "读不了令牌文件"
+  [[ "$t" =~ ^[0-9a-fA-F]{32,}$ ]] || die "令牌文件内容不对：$TOKEN_FILE"
+  printf '%s' "$t"
+}
+
+# gw_curl <路径> [curl 参数...]：调本机网关的接口；令牌只走标准输入，不出现在命令行（ps 看得到命令行）。
+gw_curl() {
+  local path="$1" t=""
+  shift
+  command -v curl >/dev/null 2>&1 || die "需要 curl"
+  t="$(gw_token)"
+  curl -sS --max-time "${CCCODROID_API_TIMEOUT:-3600}" -K - "$@" "http://127.0.0.1:$PORT$path" <<EOF
+header = "X-CC-Token: $t"
+EOF
+}
+
+ensure_gateway() {
+  if port_open; then
+    return 0
+  fi
+  log "网关没在运行，先启动…"
+  cmd_start || true
+  wait_port 150 || die "网关没起来（cccodroid doctor 看原因）"
+}
+
+# 解析网关对 import 的回复：打印汇总，导入过的会话号记到 home/imports/。回复里 ok 不为 true 时返回 1。
+import_summary() {
+  local resp="$1" desc="$2" nb=""
+  nb="$(node_bin)" || die "找不到 Node 运行时，没法解析网关的回复"
+  mkdir -p "$PREFIX/home/imports"
+  chmod 700 "$PREFIX/home/imports" 2>/dev/null || true
+  "$nb" -e '
+    const fs = require("fs");
+    const [resp, desc, dir] = process.argv.slice(1);
+    const raw = fs.readFileSync(resp, "utf8");
+    let r; try { r = JSON.parse(raw); } catch { console.log("网关的回复不是 JSON：" + raw.slice(0, 200)); process.exit(1); }
+    const imp = r.imported || [], skip = r.skipped || [];
+    if (imp.length) {
+      const f = dir + "/import-" + new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + ".json";
+      fs.writeFileSync(f, JSON.stringify({ at: new Date().toISOString(), source: desc, imported: imp, skipped: skip }, null, 1), { mode: 0o600 });
+      console.log("清单：" + f);
+    }
+    if (r.ok === false) {
+      console.log("失败：" + (r.message || "未知原因") + (imp.length ? "（出错前已导入 " + imp.length + " 个，清单已记下）" : ""));
+      process.exit(1);
+    }
+    console.log("导入 " + imp.length + " 个会话，跳过 " + skip.length + " 个（已存在）");
+    if (r.titleWarning) console.log("注意：自定义标题没写进去（存储满了或没有权限）");
+    if (r.archiveWarning) console.log("注意：章节档案没写进去（存储满了或没有权限）");
+  ' "$resp" "$desc" "$PREFIX/home/imports"
+}
+
+import_undo() {
+  local f="$1" nb="" body="" tmp=""
+  [ -f "$f" ] || f="$PREFIX/home/imports/$f"
+  [ -f "$f" ] || die "找不到清单：$1"
+  nb="$(node_bin)" || die "找不到 Node 运行时"
+  body="$("$nb" -e '
+    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const ids = (Array.isArray(r.imported) ? r.imported : []).filter((x) => /^[A-Za-z0-9_-]{1,80}$/.test(String(x)));
+    if (!ids.length) process.exit(3);
+    console.log(JSON.stringify({ ids }));
+  ' "$f")" || die "清单里没有可撤销的会话：$f"
+  ensure_gateway
+  tmp="$(mktemp "${TMPDIR:-/tmp}/cc-undo.XXXXXX")"
+  gw_curl /api/sessions/trash -X POST -H "Content-Type: application/json" -d "$body" -o "$tmp" || { rm -f "$tmp"; die "网关没响应"; }
+  "$nb" -e '
+    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    console.log("放进回收站 " + (r.done || []).length + " 个；没成功 " + ((r.failed || []).length - (r.busy || []).length) + " 个（已经不在了）；正在生成所以没动 " + (r.busy || []).length + " 个");
+  ' "$tmp" || true
+  rm -f "$tmp"
+}
+
+cmd_import() {
+  local src="" undo="" kind="" tmp="" file="" host="" rpath="" bytes=0
+  while (($#)); do
+    case "$1" in
+      --undo) [ $# -ge 2 ] || die "--undo 需要清单文件"; undo="$2"; shift 2 ;;
+      -h|--help) import_help; return 0 ;;
+      -) [ -z "$src" ] || die "只能指定一个来源"; src="-"; shift ;;
+      -*) die "未知参数：$1（cccodroid import --help 查看用法）" ;;
+      *) [ -z "$src" ] || die "只能指定一个来源"; src="$1"; shift ;;
+    esac
+  done
+  if [ -n "$undo" ]; then
+    [ -z "$src" ] || die "--undo 不能同时指定来源"
+    import_undo "$undo"
+    return
+  fi
+  if [ -z "$src" ]; then
+    import_help
+    return 0
+  fi
+  kind="$(classify_source "$src")"
+  [ "$kind" != "manifest" ] || die "import 要的是会话包 .zip，不是 latest.json"
+  ensure_gateway
+  tmp="$(mktemp -d "$PREFIX/.import-tmp.XXXXXX")" || die "无法在 $PREFIX 下创建临时目录（没有写权限？）"
+  UPDATE_TMP="$tmp"
+  case "$kind" in
+    file)
+      [ -f "$src" ] || die "文件不存在：$src"
+      file="$src" ;;
+    stdin)
+      [ ! -t 0 ] || die "标准输入是终端：用管道传入，例如 cat 会话包.zip | cccodroid import -"
+      cat > "$tmp/in.zip"
+      file="$tmp/in.zip" ;;
+    url)
+      log "下载 $src"
+      http_get "$src" "$tmp/in.zip" || die "下载失败：$src"
+      file="$tmp/in.zip" ;;
+    ssh)
+      host="${src%%:*}"
+      rpath="${src#*:}"
+      log "经 ssh 从 $host 拉取 $rpath"
+      ssh_cat "$host" "$rpath" "$tmp/in.zip" || die "从 $host 拉取失败：$rpath"
+      file="$tmp/in.zip" ;;
+  esac
+  [ -s "$file" ] || die "会话包是空的：$src"
+  [ "$(head -c 2 "$file")" = "PK" ] || die "不是 zip 文件（会话包是 cccodroid export 导出的 .zip）：$src"
+  bytes="$(stat -c %s "$file")"
+  log "把 $(human_kb $((bytes / 1024))) 的会话包交给网关导入（大包要几分钟，别中断）…"
+  gw_curl /api/sessions/import -X POST -T "$file" -H "Content-Type: application/zip" -H "Expect:" -o "$tmp/resp.json" \
+    || die "上传失败（网关没响应？cccodroid doctor 看看）"
+  import_summary "$tmp/resp.json" "$src"
+}
+
+cmd_export() {
+  local all=0 body="" tmp="" nb="" id="" ids=()
+  while (($#)); do
+    case "$1" in
+      --all) all=1; shift ;;
+      -h|--help) die "用法：cccodroid export --all | 会话号..." ;;
+      -*) die "未知参数：$1" ;;
+      *) [[ "$1" =~ ^[A-Za-z0-9_-]{1,80}$ ]] || die "会话号不合规：$1"; ids+=("$1"); shift ;;
+    esac
+  done
+  if [ "$all" -eq 1 ]; then
+    [ "${#ids[@]}" -eq 0 ] || die "--all 不能同时指定会话号"
+    body='{"all":true}'
+  else
+    [ "${#ids[@]}" -gt 0 ] || die "用法：cccodroid export --all | 会话号..."
+    body="{\"ids\":["
+    for id in "${ids[@]}"; do body="$body\"$id\","; done
+    body="${body%,}]}"
+  fi
+  nb="$(node_bin)" || die "找不到 Node 运行时"
+  ensure_gateway
+  tmp="$(mktemp "${TMPDIR:-/tmp}/cc-export.XXXXXX")"
+  gw_curl /api/sessions/export -X POST -H "Content-Type: application/json" -d "$body" -o "$tmp" || { rm -f "$tmp"; die "网关没响应"; }
+  "$nb" -e '
+    const fs = require("fs");
+    const raw = fs.readFileSync(process.argv[1], "utf8");
+    let r; try { r = JSON.parse(raw); } catch { console.log("网关的回复不是 JSON：" + raw.slice(0, 200)); process.exit(1); }
+    if (!r.ok) { console.log("失败：" + (r.message || "未知原因")); process.exit(1); }
+    console.log("导出 " + r.count + " 个会话（" + (r.bytes / 1048576).toFixed(1) + " MB）：" + r.file);
+  ' "$tmp"
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
+# ── 内置 OpenAI 本地桥（cccodroid-openai-bridge） ───────────────────────
+# 组件装在 <前缀>/bridge（跨版本稳定，桥的安装清单记着这个入口），
+# 私有运行副本和密钥在 <前缀>/home/.local/share/ccr-bridge-kit，由桥自己的安装器管理。
+bridge_dir() { printf '%s' "$PREFIX/bridge"; }
+bridge_target() { printf '%s' "$PREFIX/home/.local/share/ccr-bridge-kit"; }
+
+bridge_node() {
+  local nb=""
+  nb="$(node_bin)" || die "找不到 Node 运行时"
+  printf '%s' "$nb"
+}
+
+bridge_component() {
+  local bdir="" nb=""
+  bdir="$(bridge_dir)"
+  [ -f "$bdir/component.cjs" ] || die "这个安装里没有内置桥组件（$bdir 不存在）；需要带 bridge/ 的发行包"
+  nb="$(bridge_node)"
+  PATH="$(dirname "$nb"):$PATH" HOME="$PREFIX/home" "$nb" "$bdir/component.cjs" "$@"
+}
+
+bridge_usage() {
+  cat <<'EOF'
+用法：cccodroid bridge <命令>
+
+  status                    安装与运行状态（不含密钥）
+  configure [--config JSON] [--port N] [--yes]
+                            首次配置（交互；非交互用 --config 指向 0600 的私有 JSON）
+  start | stop | ensure     启动并等待就绪 / 停止（--yes）/ 只确保在跑
+  connection [--show-key]   本机地址、模型和密钥文件（--show-key 才打印密钥）
+  provider                  把本地桥登记成网关里的一个接口（自定义线路「本地 OpenAI 桥」）
+  service install|remove|status
+                            用 systemd 用户服务常驻（开机自启；推荐，网关重启不会带走它）
+  uninstall [--yes] [--purge]
+                            卸载（默认保留密钥和配置；--purge 连它们一起删）
+  selftest                  只测回环假上游，不消耗任何额度
+
+第一次用：cccodroid bridge configure → cccodroid bridge service install → cccodroid bridge provider
+EOF
+}
+
+cmd_bridge_provider() {
+  local conn="" nb="" tmp="" body="" resp="" idfile=""
+  conn="$(bridge_target)/connection.json"
+  [ -f "$conn" ] || die "本地桥还没配置：先运行 cccodroid bridge configure"
+  nb="$(bridge_node)"
+  ensure_gateway
+  tmp="$(mktemp "${TMPDIR:-/tmp}/cc-bridge.XXXXXX")"
+  idfile="$(bridge_target)/cccodroid-provider.json"
+  if ! gw_curl /api/providers > "$tmp"; then rm -f "$tmp"; die "读不到网关的接口列表"; fi
+  body="$("$nb" - "$conn" "$tmp" "$idfile" <<'JS'
+const fs = require("fs");
+const [connFile, listFile, idFile] = process.argv.slice(2);
+const c = JSON.parse(fs.readFileSync(connFile, "utf8"));
+let list = {};
+try { list = JSON.parse(fs.readFileSync(listFile, "utf8")); } catch {}
+let id = null;
+try { id = JSON.parse(fs.readFileSync(idFile, "utf8")).id || null; } catch {}
+const norm = (u) => String(u || "").replace(/\/+$/, "");
+const items = Array.isArray(list.providers) ? list.providers : [];
+const hit = items.find((p) => norm(p.baseUrl) === norm(c.baseUrl));
+if (hit) id = hit.id;
+const models = Array.isArray(c.models) && c.models.length ? c.models.map(String) : [String(c.model)];
+const extra = models.filter((m) => m !== c.model).map((m) => ({ id: m }));
+const body = { label: "本地 OpenAI 桥", baseUrl: c.baseUrl, apiKey: c.apiKey, authStyle: "x-api-key", defaultModel: c.model };
+if (extra.length) body.extraModels = extra;
+if (id) body.id = id;
+process.stdout.write(JSON.stringify(body));
+JS
+)"
+  rm -f "$tmp"
+  [ -n "$body" ] || die "没能组装出接口配置（connection.json 不完整？）"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/cc-bridge.XXXXXX")"
+  printf '%s' "$body" > "$tmp"
+  resp="$(gw_curl /api/providers/save -X POST -H 'Content-Type: application/json' --data-binary "@$tmp")"
+  rm -f "$tmp"
+  "$nb" - "$resp" "$idfile" <<'JS'
+const fs = require("fs");
+const [resp, idFile] = process.argv.slice(2);
+let r = {};
+try { r = JSON.parse(resp); } catch { console.log("网关的回复看不懂：" + String(resp).slice(0, 200)); process.exit(1); }
+if (!r.ok) { console.log("失败：" + (r.message || r.error || "未知原因")); process.exit(1); }
+fs.writeFileSync(idFile, JSON.stringify({ id: r.id }) + "\n", { mode: 0o600 });
+console.log("已在「设置 → 接口」里登记线路「本地 OpenAI 桥」（id " + r.id + "），默认模型 " + (r.provider && r.provider.defaultModel || "") + "。");
+console.log("下一步：在设置里切到这家，或直接开一个新会话；桥的密钥文件在 " + idFile.replace(/\/[^/]+$/, "") + "/connection.json（别转发）。");
+JS
+}
+
+cmd_bridge_service() {
+  local act="${1:-status}" tgt="" unit="" nb="" ndir=""
+  command -v systemctl >/dev/null 2>&1 || die "本机没有 systemctl；可以直接用 cccodroid bridge start / stop 管理"
+  tgt="$(bridge_target)"
+  unit="$HOME/.config/systemd/user/${CCCODROID_BRIDGE_SERVICE_NAME:-cccodroid-bridge.service}"
+  case "$act" in
+    install)
+      [ -f "$tgt/.ccr-bridge-kit.json" ] || die "本地桥还没配置：先运行 cccodroid bridge configure"
+      nb="$(bridge_node)"; ndir="$(dirname "$nb")"
+      mkdir -p "$(dirname "$unit")"
+      cat > "$unit.tmp.$$" <<EOF
+[Unit]
+Description=cccodroid OpenAI 本地桥（CCR 看护）
+After=network.target
+
+[Service]
+Type=simple
+Environment="PATH=$ndir:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/bin/bash "$tgt/watchdog.sh"
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+      mv -f "$unit.tmp.$$" "$unit"
+      systemctl --user daemon-reload
+      if ! systemctl --user enable --now "${CCCODROID_BRIDGE_SERVICE_NAME:-cccodroid-bridge.service}"; then
+        systemctl --user status "${CCCODROID_BRIDGE_SERVICE_NAME:-cccodroid-bridge.service}" --no-pager 2>&1 | tail -15 >&2 || true
+        die "服务没起来；日志：journalctl --user -u "${CCCODROID_BRIDGE_SERVICE_NAME:-cccodroid-bridge}" -n 50"
+      fi
+      log "已安装并启动 cccodroid-bridge.service（开机自启；cccodroid bridge service remove 撤销）"
+      ;;
+    remove)
+      systemctl --user disable --now "${CCCODROID_BRIDGE_SERVICE_NAME:-cccodroid-bridge.service}" >/dev/null 2>&1 || true
+      rm -f "$unit"
+      systemctl --user daemon-reload
+      log "已停止并移除 cccodroid-bridge.service（桥本身可以用 cccodroid bridge start 手动起）"
+      ;;
+    status)
+      systemctl --user status "${CCCODROID_BRIDGE_SERVICE_NAME:-cccodroid-bridge.service}" --no-pager || true
+      ;;
+    *) die "用法：cccodroid bridge service install|remove|status" ;;
+  esac
+}
+
+cmd_bridge() {
+  local sub="${1:-help}"
+  if [ $# -gt 0 ]; then shift; fi
+  case "$sub" in
+    status|start|ensure|stop|uninstall|configure)
+      bridge_component "$sub" "$@" ;;
+    connection)
+      local tgt="" nb=""
+      tgt="$(bridge_target)"
+      [ -f "$tgt/connection.json" ] || die "本地桥还没配置：先运行 cccodroid bridge configure"
+      nb="$(bridge_node)"
+      PATH="$(dirname "$nb"):$PATH" HOME="$PREFIX/home" "$nb" "$(bridge_dir)/installer.cjs" connection --dir "$tgt" "$@" ;;
+    provider)
+      cmd_bridge_provider "$@" ;;
+    service)
+      cmd_bridge_service "$@" ;;
+    selftest)
+      bridge_component --selftest ;;
+    help|--help|-h)
+      bridge_usage ;;
+    *)
+      die "未知的 bridge 命令：$sub（cccodroid bridge help 查看用法）" ;;
+  esac
+}
+
+# ── 页面操控 MCP（ccui） ──────────────────────────────────────────────
+# 把原生窗口（Qt WebEngine）里的页面当成「屏幕」，工具见 ui-mcp/server.mjs；
+# 这里只负责在 Claude 的 user 级 MCP 配置里登记 / 移除这个 stdio 服务。
+ui_mcp_server() { printf '%s' "$CURRENT/ui-mcp/server.mjs"; }
+
+cmd_ui_mcp() {
+  local act="${1:-status}" nb="" srv="" claude="" js=""
+  if [ $# -gt 0 ]; then shift; fi
+  srv="$(ui_mcp_server)"
+  nb="$(node_bin)" || die "找不到 Node 运行时"
+  claude="$CURRENT/runtime/claude"
+  case "$act" in
+    install)
+      [ -f "$srv" ] || die "这个版本没有 ui-mcp/server.mjs（需要 0.5.0 及以后）"
+      [ -x "$claude" ] || die "找不到 $claude"
+      js="$("$nb" -e 'console.log(JSON.stringify({type:"stdio",command:process.argv[1],args:[process.argv[2]]}))' "$nb" "$srv")"
+      HOME="$PREFIX/home" "$claude" mcp remove -s user ccui >/dev/null 2>&1 || true
+      if ! HOME="$PREFIX/home" "$claude" mcp add-json -s user ccui "$js" >/dev/null 2>"${TMPDIR:-/tmp}/cc-ui-mcp.err"; then
+        cat "${TMPDIR:-/tmp}/cc-ui-mcp.err" >&2 || true
+        rm -f "${TMPDIR:-/tmp}/cc-ui-mcp.err"
+        die "登记页面操控 MCP 失败"
+      fi
+      rm -f "${TMPDIR:-/tmp}/cc-ui-mcp.err"
+      log "已登记页面操控 MCP（ccui）：${srv}"
+      ;;
+    remove)
+      HOME="$PREFIX/home" "$claude" mcp remove -s user ccui >/dev/null 2>&1 || true
+      log "已移除页面操控 MCP（ccui）"
+      ;;
+    status)
+      "$nb" - "$PREFIX/home/.claude.json" <<'JS'
+const fs = require("fs");
+const f = process.argv[2];
+let j = {};
+try { j = JSON.parse(fs.readFileSync(f, "utf8")); } catch {}
+const def = (j.mcpServers || {}).ccui;
+if (!def) { console.log("未登记（cccodroid ui-mcp install 登记）"); process.exit(1); }
+console.log("已登记：" + JSON.stringify(def));
+try {
+  const dir = process.env.XDG_RUNTIME_DIR || null;
+  const port = dir && JSON.parse(fs.readFileSync(dir + "/cccodroid-cdp.json", "utf8")).port;
+  console.log("窗口调试端口：" + (port || "（窗口没在运行）"));
+} catch { console.log("窗口调试端口：（窗口没在运行）"); }
+JS
+      ;;
+    *) die "用法：cccodroid ui-mcp install|remove|status" ;;
+  esac
+}
+
+# ── Claude Code 本体（首次安装 / 手动补装） ───────────────────────────
+# 发行包不随附 Claude Code（Anthropic 专有软件）；这里从 npm 官方平台包下载并验签安装到
+# <版本>/runtime/claude。也可以用 --from 指定本机已有的 claude 二进制。
+cmd_install_claude() {
+  local nb="" dest="" src=""
+  nb="$(node_bin)" || die "找不到 Node 运行时"
+  dest="$CURRENT/runtime/claude"
+  src="$CURRENT/bin/install-claude.mjs"
+  [ -f "$src" ] || die "这个版本没有 install-claude.mjs（需要 0.5.3 及以后）"
+  mkdir -p "$(dirname "$dest")"
+  "$nb" "$src" --dest "$dest" "$@"
+}
+
+# ── 分发 ──────────────────────────────────────────────────────────────
+case "${1:-help}" in
+  start)   cmd_start ;;
+  stop)    shift; cmd_stop "$@" ;;
+  restart) shift; cmd_restart "$@" ;;
+  status)  cmd_status ;;
+  url)     cmd_url ;;
+  open)    shift; cmd_open "$@" ;;
+  logs)    cmd_logs ;;
+  procs)   cmd_procs ;;
+  doctor)  shift; cmd_doctor "$@" ;;
+  tools-doc) shift; cmd_tools_doc "$@" ;;
+  version|--version|-V) cmd_version ;;
+  update)  shift; cmd_update "$@" ;;
+  rollback) shift; cmd_rollback "$@" ;;
+  prune)   shift; cmd_prune "$@" ;;
+  steam)   shift; cmd_steam "$@" ;;
+  import)  shift; cmd_import "$@" ;;
+  bridge)  shift; cmd_bridge "$@" ;;
+  ui-mcp)  shift; cmd_ui_mcp "$@" ;;
+  install-claude) shift; cmd_install_claude "$@" ;;
+  export)  shift; cmd_export "$@" ;;
+  help|--help|-h) usage ;;
+  *)       die "未知命令：$1（cccodroid help 查看用法）" ;;
+esac

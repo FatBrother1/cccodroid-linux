@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+# ─────────────────────────────────────────────────────────────────────
+# cccodroid-steam：在 Steam 里加 / 删 / 查看「非 Steam 游戏」快捷方式（游戏模式入口）
+#
+# 由 `cccodroid steam ...` 调用，只用标准库。
+#   status                  显示会改哪个 Steam 用户、快捷方式在不在
+#   add                     加（已有则更新）名为 cccodroid 的快捷方式，指向 cccodroid-steam-launch
+#   remove                  只删自己那一条
+# 通用选项：--user ID  --steam-dir DIR（或环境变量 CCCODROID_STEAM_DIR）  --dry-run
+# add / remove：--restart-steam 先温和关闭 Steam，改完再起回来（Steam 在运行时会在退出时覆盖
+#               shortcuts.vdf，所以默认拒绝）；add 另有 --icon FILE。
+# 退出码：0 成功 / status 里有；1 出错或 status 里没有；2 用法错误；3 Steam 在运行被拒绝。
+# ─────────────────────────────────────────────────────────────────────
+import argparse
+import contextlib
+import errno
+import fcntl
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import zlib
+
+APP_NAME = "cccodroid"
+LAUNCHER_BASENAME = "cccodroid-steam-launch"
+FREEDECK_LOCK = ".freedeck-lock-shortcuts.vdf"
+
+T_DICT, T_STR, T_INT, T_FLOAT, T_PTR, T_WSTR, T_COLOR, T_U64, T_END, T_I64 = 0, 1, 2, 3, 4, 5, 6, 7, 8, 10
+
+
+class Fail(Exception):
+    def __init__(self, msg, code=1):
+        super().__init__(msg)
+        self.code = code
+
+
+def say(msg):
+    print("[cccodroid] " + msg)
+
+
+def warn(msg):
+    print("[cccodroid] 警告：" + msg, file=sys.stderr)
+
+
+# ── 二进制 VDF（shortcuts.vdf）──────────────────────────────────────────
+def parse(data):
+    pos = 0
+    n = len(data)
+
+    def cstr():
+        nonlocal pos
+        end = data.find(b"\x00", pos)
+        if end < 0:
+            raise Fail("shortcuts.vdf 格式不对：字符串没有结尾")
+        s = data[pos:end]
+        pos = end + 1
+        return s
+
+    def take(k):
+        nonlocal pos
+        if pos + k > n:
+            raise Fail("shortcuts.vdf 格式不对：数据被截断")
+        b = data[pos:pos + k]
+        pos += k
+        return b
+
+    def block():
+        nonlocal pos
+        items = []
+        while True:
+            if pos >= n:
+                raise Fail("shortcuts.vdf 格式不对：缺少结束标记")
+            t = data[pos]
+            pos += 1
+            if t == T_END:
+                return items
+            key = cstr()
+            if t == T_DICT:
+                items.append((key, t, block()))
+            elif t == T_STR:
+                items.append((key, t, cstr()))
+            elif t in (T_INT, T_FLOAT, T_PTR, T_COLOR):
+                items.append((key, t, take(4)))
+            elif t in (T_U64, T_I64):
+                items.append((key, t, take(8)))
+            elif t == T_WSTR:
+                start = pos
+                while True:
+                    if pos + 2 > n:
+                        raise Fail("shortcuts.vdf 格式不对：宽字符串没有结尾")
+                    pos += 2
+                    if data[pos - 2:pos] == b"\x00\x00":
+                        break
+                items.append((key, t, data[start:pos]))
+            else:
+                raise Fail("shortcuts.vdf 里有不认识的字段类型 %d，不敢改" % t)
+
+    root = block()
+    return root, data[pos:]
+
+
+def dump(root, tail=b""):
+    out = bytearray()
+
+    def emit(items):
+        for key, t, val in items:
+            out.append(t)
+            out.extend(key)
+            out.append(0)
+            if t == T_DICT:
+                emit(val)
+                out.append(T_END)
+            elif t == T_STR:
+                out.extend(val)
+                out.append(0)
+            else:
+                out.extend(val)
+
+    emit(root)
+    out.append(T_END)
+    out.extend(tail)
+    return bytes(out)
+
+
+def u32(v):
+    return struct.pack("<I", v & 0xFFFFFFFF)
+
+
+def find_key(items, name):
+    low = name.lower().encode()
+    for i, (k, _t, _v) in enumerate(items):
+        if k.lower() == low:
+            return i
+    return -1
+
+
+def field_str(entry, name):
+    i = find_key(entry, name)
+    if i < 0 or entry[i][1] != T_STR:
+        return None
+    return entry[i][2].decode("utf-8", "replace")
+
+
+def set_field(entry, name, t, val):
+    i = find_key(entry, name)
+    if i >= 0:
+        entry[i] = (entry[i][0], t, val)
+    else:
+        entry.append((name.encode(), t, val))
+
+
+def unquote(s):
+    s = s.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1]
+    return s
+
+
+def quote(s):
+    return '"' + s + '"'
+
+
+def shortcut_appid(exe_quoted, name):
+    return (zlib.crc32((exe_quoted + name).encode("utf-8")) & 0xFFFFFFFF) | 0x80000000
+
+
+def new_entry(idx, appid, exe_quoted, startdir_quoted, icon, tags):
+    return (str(idx).encode(), T_DICT, [
+        (b"appid", T_INT, u32(appid)),
+        (b"AppName", T_STR, APP_NAME.encode()),
+        (b"Exe", T_STR, exe_quoted.encode()),
+        (b"StartDir", T_STR, startdir_quoted.encode()),
+        (b"icon", T_STR, icon.encode()),
+        (b"ShortcutPath", T_STR, b""),
+        (b"LaunchOptions", T_STR, b""),
+        (b"IsHidden", T_INT, u32(0)),
+        (b"AllowDesktopConfig", T_INT, u32(1)),
+        (b"AllowOverlay", T_INT, u32(1)),
+        (b"OpenVR", T_INT, u32(0)),
+        (b"Devkit", T_INT, u32(0)),
+        (b"DevkitGameID", T_STR, b""),
+        (b"DevkitOverrideAppID", T_INT, u32(0)),
+        (b"LastPlayTime", T_INT, u32(0)),
+        (b"FlatpakAppID", T_STR, b""),
+        (b"tags", T_DICT, [(str(i).encode(), T_STR, t.encode()) for i, t in enumerate(tags)]),
+    ])
+
+
+# ── Steam 目录、用户、进程 ──────────────────────────────────────────────
+def default_steam_dirs():
+    home = os.path.expanduser("~")
+    return [home + "/.local/share/Steam", home + "/.steam/steam",
+            home + "/.var/app/com.valvesoftware.Steam/.local/share/Steam"]
+
+
+def find_steam_dir(arg):
+    explicit = arg or os.environ.get("CCCODROID_STEAM_DIR")
+    if explicit:
+        # 明确指定了就只认它，不退回真实的 Steam 目录（测试时不能误改正式的）
+        if not os.path.isdir(os.path.join(explicit, "userdata")):
+            raise Fail("指定的 Steam 目录里没有 userdata/：%s" % explicit)
+        return os.path.realpath(explicit)
+    for c in default_steam_dirs():
+        if os.path.isdir(os.path.join(c, "userdata")):
+            return os.path.realpath(c)
+    raise Fail("找不到 Steam 目录（~/.local/share/Steam）。装了 Steam 并登录过吗？也可以用 --steam-dir 指定")
+
+
+def pick_user(steam_dir, wanted):
+    ud = os.path.join(steam_dir, "userdata")
+    if wanted:
+        if not wanted.isdigit() or not os.path.isdir(os.path.join(ud, wanted)):
+            raise Fail("userdata 下没有这个用户：%s" % wanted)
+        return wanted, []
+    cands = []
+    for name in os.listdir(ud):
+        if not name.isdigit() or name == "0":
+            continue
+        try:
+            m = os.stat(os.path.join(ud, name, "config", "localconfig.vdf")).st_mtime
+        except OSError:
+            continue
+        cands.append((m, name))
+    if not cands:
+        raise Fail("userdata 下没有登录过的 Steam 用户（找不到 config/localconfig.vdf）；用 --user 指定")
+    cands.sort(reverse=True)
+    return cands[0][1], [n for _m, n in cands[1:]]
+
+
+def steam_processes(proc_name):
+    me = os.getuid()
+    found = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + pid).st_uid != me:
+                continue
+            with open("/proc/%s/comm" % pid, "rb") as f:
+                comm = f.read().strip().decode("utf-8", "replace")
+            if comm != proc_name:
+                continue
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                cmd = f.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        found.append((int(pid), cmd))
+    return found
+
+
+def steam_running_for(steam_dir):
+    # 只在「这个 Steam 目录正被运行中的 Steam 使用」时才算：真实目录里任何 steam 进程都算，
+    # 别的目录（测试沙箱）只看进程命令行里有没有它的路径。
+    proc = os.environ.get("CCCODROID_STEAM_PROC", "steam")
+    real_defaults = {os.path.realpath(d) for d in default_steam_dirs()}
+    for pid, cmd in steam_processes(proc):
+        if steam_dir in real_defaults or steam_dir in cmd:
+            return pid
+    return 0
+
+
+def in_game_mode():
+    return "gamescope" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower() or bool(steam_processes("gamescope-session"))
+
+
+def steam_binary():
+    return os.environ.get("CCCODROID_STEAM_BIN") or shutil.which("steam")
+
+
+# ── 写入 ────────────────────────────────────────────────────────────────
+@contextlib.contextmanager
+def cooperative_lock(config_dir, timeout=10.0):
+    # Freedeck 插件（Decky）用 config/.freedeck-lock-shortcuts.vdf 做 flock 咨询锁，只用来让它自己的写入排队，
+    # 并不阻止别人改 shortcuts.vdf。这里同样去拿一下，免得和它的写入撞车；只读打开就能 flock，不需要写权限。
+    path = os.path.join(config_dir, FREEDECK_LOCK)
+    fd = None
+    if os.path.exists(path):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            fd = None
+    if fd is None:
+        yield
+        return
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError as e:
+            if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                os.close(fd)
+                raise
+            if time.time() > deadline:
+                os.close(fd)
+                raise Fail("shortcuts.vdf 正被 Freedeck 插件占用（%d 秒没等到），稍后再试" % int(timeout))
+            time.sleep(0.2)
+    try:
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def backup_file(path):
+    if not os.path.exists(path):
+        return None
+    first = path + ".cccodroid-bak"
+    if not os.path.exists(first):
+        shutil.copy2(path, first)
+        return first
+    stamp = path + ".cccodroid-bak-" + time.strftime("%Y%m%d-%H%M%S")
+    shutil.copy2(path, stamp)
+    old = sorted(p for p in (os.path.join(os.path.dirname(path), n) for n in os.listdir(os.path.dirname(path)))
+                 if p.startswith(path + ".cccodroid-bak-"))
+    for p in old[:-3]:
+        with contextlib.suppress(OSError):
+            os.unlink(p)
+    return stamp
+
+
+def atomic_write(path, data):
+    mode = 0o644
+    with contextlib.suppress(OSError):
+        mode = os.stat(path).st_mode & 0o777
+    tmp = "%s.cccodroid-tmp.%d" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def load(path):
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
+        return [(b"shortcuts", T_DICT, [])], b"", False
+    root, tail = parse(data)
+    if dump(root, tail) != data:
+        raise Fail("shortcuts.vdf 重新序列化后和原文件不一致，不敢改（已原样保留）")
+    return root, tail, True
+
+
+def shortcuts_of(root):
+    i = find_key(root, "shortcuts")
+    if i < 0:
+        root.append((b"shortcuts", T_DICT, []))
+        i = len(root) - 1
+    if root[i][1] != T_DICT:
+        raise Fail("shortcuts.vdf 里的 shortcuts 不是目录，不敢改")
+    return root[i][2]
+
+
+def is_ours(entry, launcher, adopt_stale):
+    exe = field_str(entry, "Exe")
+    if exe is None:
+        return False
+    exe = unquote(exe)
+    if exe == launcher:
+        return True
+    return adopt_stale and os.path.basename(exe) == LAUNCHER_BASENAME and not os.path.exists(exe)
+
+
+def renumber(entries):
+    return [(str(i).encode(), T_DICT, e[2]) for i, e in enumerate(entries)]
+
+
+# ── 命令 ────────────────────────────────────────────────────────────────
+def start_steam(cc_detach):
+    binary = steam_binary()
+    if not binary:
+        warn("找不到 steam 命令，请手动启动 Steam")
+        return
+    cmd = [binary, "-silent"]
+    if cc_detach and os.access(cc_detach, os.X_OK):
+        cmd = [cc_detach, "-n", "steam-client", "--"] + cmd
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if r.returncode != 0:
+            lines = (r.stderr or "").strip().splitlines()
+            warn("起回 Steam 失败" + ("：" + lines[-1] if lines else "") + "；请手动启动 Steam")
+        return
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def shutdown_steam(steam_dir):
+    binary = steam_binary()
+    if not binary:
+        raise Fail("找不到 steam 命令，没法温和关闭；请自己先退出 Steam")
+    say("正在关闭 Steam（steam -shutdown）…")
+    subprocess.run([binary, "-shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    for _ in range(180):
+        if not steam_running_for(steam_dir):
+            return
+        time.sleep(0.5)
+    raise Fail("Steam 90 秒内没有退出，没有改动任何文件；请手动退出 Steam 后重试")
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="cccodroid steam", add_help=True,
+                                 description="在 Steam 里加 / 删 / 查看 cccodroid 的「非 Steam 游戏」快捷方式（游戏模式入口）")
+    ap.add_argument("action", choices=["add", "remove", "status"])
+    ap.add_argument("--user", help="Steam 用户 ID（userdata 下的数字目录）；默认取最近登录过的")
+    ap.add_argument("--steam-dir", help="Steam 目录（含 userdata/）；也可用环境变量 CCCODROID_STEAM_DIR")
+    ap.add_argument("--dry-run", action="store_true", help="只显示会做什么，不改任何文件")
+    ap.add_argument("--restart-steam", action="store_true", help="先温和关闭 Steam，改完再起回来")
+    ap.add_argument("--icon", help="快捷方式图标（png / jpg / ico，Steam 不认 svg）")
+    ap.add_argument("--prefix", required=True, help=argparse.SUPPRESS)
+    ap.add_argument("--launcher", required=True, help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+
+    launcher = os.path.abspath(args.launcher)
+    steam_dir = find_steam_dir(args.steam_dir)
+    user, others = pick_user(steam_dir, args.user)
+    config_dir = os.path.join(steam_dir, "userdata", user, "config")
+    vdf = os.path.join(config_dir, "shortcuts.vdf")
+    cc_detach = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cc-detach")
+
+    say("Steam 目录：%s；用户：%s%s" % (steam_dir, user, "（另有 %s，用 --user 指定）" % "、".join(others) if others and not args.user else ""))
+
+    root, tail, existed = load(vdf)
+    entries = shortcuts_of(root)
+    mine = [i for i, (_k, _t, e) in enumerate(entries) if is_ours(e, launcher, adopt_stale=args.action == "add")]
+
+    if args.action == "status":
+        running = steam_running_for(steam_dir)
+        say("Steam：%s" % ("正在运行" if running else "未运行"))
+        say("启动脚本：%s%s" % (launcher, "" if os.access(launcher, os.X_OK) else "（不存在或不可执行）"))
+        if not mine:
+            say("快捷方式：未添加（cccodroid steam add）")
+            return 1
+        e = entries[mine[0]][2]
+        i = find_key(e, "appid")
+        appid = struct.unpack("<I", e[i][2])[0] if i >= 0 and e[i][1] == T_INT else 0
+        say("快捷方式：已添加（第 %d 项，appid %d）" % (mine[0], appid))
+        return 0
+
+    if args.action == "add":
+        if not os.access(launcher, os.X_OK):
+            raise Fail("启动脚本不存在或不可执行：%s" % launcher)
+        icon = ""
+        if args.icon:
+            icon = os.path.abspath(args.icon)
+            if not os.path.isfile(icon):
+                raise Fail("图标文件不存在：%s" % icon)
+        exe_q = quote(launcher)
+        appid = shortcut_appid(exe_q, APP_NAME)
+        startdir_q = quote(os.path.expanduser("~") + "/")
+        before = dump(root, tail)
+        if mine:
+            e = entries[mine[0]][2]
+            set_field(e, "appid", T_INT, u32(appid))
+            set_field(e, "AppName", T_STR, APP_NAME.encode())
+            set_field(e, "Exe", T_STR, exe_q.encode())
+            set_field(e, "StartDir", T_STR, startdir_q.encode())
+            if icon:
+                set_field(e, "icon", T_STR, icon.encode())
+            for extra in mine[1:][::-1]:
+                del entries[extra]
+            verb = "更新"
+        else:
+            entries.append(new_entry(len(entries), appid, exe_q, startdir_q, icon, ["cccodroid"]))
+            verb = "添加"
+        entries[:] = renumber(entries)
+        after = dump(root, tail)
+        if after == before:
+            say("快捷方式已是最新，没有改动")
+            return 0
+        say("将%s快捷方式 cccodroid → %s（appid %d）" % (verb, launcher, appid))
+    else:
+        if not mine:
+            say("没有找到属于这个安装的 cccodroid 快捷方式，无需删除")
+            return 0
+        for i in mine[::-1]:
+            del entries[i]
+        entries[:] = renumber(entries)
+        after = dump(root, tail)
+        say("将删除 %d 个 cccodroid 快捷方式" % len(mine))
+
+    if args.dry_run:
+        say("（--dry-run：没有写入任何文件）")
+        return 0
+
+    running = steam_running_for(steam_dir)
+    if running:
+        if in_game_mode():
+            raise Fail("游戏模式下不能改：请切到桌面模式，在桌面里运行这条命令", 3)
+        if not args.restart_steam:
+            raise Fail("Steam 正在运行（pid %d）。Steam 退出时会用内存里的列表覆盖 shortcuts.vdf，现在改会被冲掉。\n"
+                       "  先退出 Steam（steam -shutdown）再运行；或加 --restart-steam 让我先关再起回来。" % running, 3)
+        shutdown_steam(steam_dir)
+
+    os.makedirs(config_dir, exist_ok=True)
+    with cooperative_lock(config_dir):
+        bak = backup_file(vdf)
+        atomic_write(vdf, after)
+    if bak:
+        say("原文件已备份：%s" % bak)
+    say("已写入：%s" % vdf)
+
+    if running and args.restart_steam:
+        say("正在起回 Steam…")
+        start_steam(cc_detach)
+    elif args.action == "add":
+        say("下次启动 Steam 后，在库里找「cccodroid」；游戏模式的「非 Steam 游戏」栏里也会出现。")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Fail as e:
+        print("[cccodroid] 错误：%s" % e, file=sys.stderr)
+        sys.exit(e.code)
+    except KeyboardInterrupt:
+        sys.exit(130)

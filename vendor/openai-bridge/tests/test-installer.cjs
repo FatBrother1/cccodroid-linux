@@ -1,0 +1,181 @@
+#!/usr/bin/env node
+'use strict';
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const os=require('node:os');
+const child=require('node:child_process');
+const api=require('../installer.cjs');
+const target='/private/example/bridge with apostrophe\'s';
+const valid={endpoint:'https://api.example.com/v1/chat/completions',apiKey:'test-only',model:'model-test'};
+
+test('merges one scoped own SessionStart hook without changing other settings',()=>{
+  const src={env:{CUSTOM:'keep'},permissions:{allow:['Read']},hooks:{SessionStart:[{matcher:'startup',hooks:[{type:'command',command:'printf existing'}]}],Stop:[{hooks:[{type:'command',command:'printf stop'}]}]}};
+  const copy=structuredClone(src),out=api.mergeHook(src,target);
+  assert.deepEqual(src,copy);
+  assert.deepEqual(out.env,src.env);
+  assert.deepEqual(out.hooks.Stop,src.hooks.Stop);
+  assert.deepEqual(out.hooks.SessionStart[0],src.hooks.SessionStart[0]);
+  assert.equal(out.hooks.SessionStart.length,2);
+  const own=out.hooks.SessionStart[1];
+  assert.equal(own.matcher,'startup|resume');
+  assert.equal(own.hooks[0].timeout,20);
+  assert.match(own.hooks[0].command,/start-bridge\.sh' --hook$/);
+  assert.deepEqual(api.mergeHook(out,target),out);
+});
+test('migrates the legacy broad hook to the scoped hook',()=>{
+  const legacy={hooks:{SessionStart:[api.legacyHookEntry(target)]}};
+  const out=api.mergeHook(legacy,target);
+  assert.equal(out.hooks.SessionStart.length,1);
+  assert.equal(out.hooks.SessionStart[0].matcher,'startup|resume');
+  assert.match(out.hooks.SessionStart[0].hooks[0].command,/ --hook$/);
+});
+test('uninstall restores semantic settings and preserves user hooks',()=>{
+  const src={env:{CUSTOM:'keep'},hooks:{SessionStart:[{hooks:[{type:'command',command:'printf existing'}]}]}};
+  assert.deepEqual(api.removeHook(api.mergeHook(src,target),target),src);
+  assert.deepEqual(api.removeHook(api.mergeHook({},target),target),{});
+});
+test('uninstall removes only its exact hook from a mixed group',()=>{
+  const own=api.hookEntry(target).hooks[0];
+  const src={hooks:{SessionStart:[{matcher:'startup',hooks:[own,{type:'command',command:'keep'}]}]}};
+  assert.deepEqual(api.removeHook(src,target).hooks.SessionStart,[{matcher:'startup',hooks:[{type:'command',command:'keep'}]}]);
+});
+test('modified own hook is not silently replaced',()=>{
+  const src=api.mergeHook({},target);
+  src.hooks.SessionStart[0].hooks[0].timeout=999;
+  assert.throws(()=>api.mergeHook(src,target),/定制/);
+  assert.deepEqual(api.removeHook(src,target),src);
+});
+test('shell quoting preserves spaces, quotes, dollar signs and unicode',()=>{
+  const value="a'b 中文 $HOME `uname` ; end";
+  const r=child.spawnSync('bash',['-c','printf %s '+api.quote(value)],{encoding:'utf8'});
+  assert.equal(r.status,0);
+  assert.equal(r.stdout,value);
+});
+test('accepts valid HTTPS endpoint and local HTTP test endpoint',()=>{
+  assert.equal(api.validateConfig(valid,3459).model,'model-test');
+  assert.equal(api.validateConfig({...valid,endpoint:'http://127.0.0.1:12345/v1/chat/completions'},3459).apiKey,'test-only');
+});
+test('rejects insecure remote HTTP, credentials and URL query secrets',()=>{
+  for(const endpoint of ['http://example.com/v1/chat/completions','https://user:pass@example.com/a','https://example.com/a?key=secret','https://example.com/a#fragment','file:///etc/passwd']){
+    assert.throws(()=>api.validateConfig({...valid,endpoint},3459));
+  }
+});
+test('rejects missing keys, bad model and invalid ports',()=>{
+  for(const c of [{...valid,apiKey:''},{...valid,apiKey:'a\nb'},{...valid,model:''},{...valid,model:'a,b'}])assert.throws(()=>api.validateConfig(c,3459));
+  for(const p of [0,1023,65536,3459.5,NaN])assert.throws(()=>api.validateConfig(valid,p));
+});
+test('router config uses fresh local key and never mutates input',()=>{
+  const out=api.routerConfig(valid,3459,'local-test-only');
+  assert.equal(out.APIKEY,'local-test-only');
+  assert.equal(out.Providers[0].api_key,'test-only');
+  assert.equal(out.HOST,'127.0.0.1');
+  assert.equal(out.LOG_LEVEL,'info');
+  assert.equal(out.Router.default,'relay,model-test');
+});
+test('optional model IDs preserve the legacy shape and configure every model without changing default routes',()=>{
+  assert.deepEqual(api.validateConfig(valid,3459),valid);
+  const input={...valid,models:['model-two',valid.model,'模型-三']},before=structuredClone(input);
+  const normalized=api.validateConfig(input,3459),out=api.routerConfig(normalized,3459,'local-test-only');
+  assert.deepEqual(normalized,input);assert.deepEqual(out.Providers[0].models,input.models);
+  assert.deepEqual(api.routerConfig(valid,3459,'local-test-only').Providers[0].models,[valid.model]);
+  for(const name of ['default','background','think','longContext','webSearch'])assert.equal(out.Router[name],'relay,'+valid.model);
+  out.Providers[0].models.push('cannot-mutate-input');assert.deepEqual(input,before);
+  const hundred=Array.from({length:100},(_,i)=>'fixture-'+i);
+  assert.equal(api.validateConfig({...valid,model:hundred[99],models:hundred},3459).models.length,100);
+  assert.deepEqual(api.validateConfig({...valid,models:[' '+valid.model+' ',' model-two ']},3459).models,[valid.model,'model-two']);
+});
+test('models must contain 1..100 unique valid ID strings and include the default model',()=>{
+  for(const models of [undefined,null,{},'model-test',[],[valid.model,valid.model],[valid.model,' '+valid.model+' '],['other-model'],
+    ...[null,1,true,{},[],{id:'model-two'},'', ' ', 'bad,model','bad\nmodel','bad\tmodel','bad\u0085model','x'.repeat(201)].map(id=>[valid.model,id]),
+    Array.from({length:101},(_,i)=>i?'fixture-'+i:valid.model)])assert.throws(()=>api.validateConfig({...valid,models},3459));
+});
+test('settings with invalid JSON, wrong schema or all hooks disabled are rejected',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kit-unit-'));
+  const file=path.join(dir,'settings.json');
+  try{
+    for(const v of ['{bad','[]','{"hooks":[]}','{"hooks":{"SessionStart":{}}}','{"disableAllHooks":true}']){
+      fs.writeFileSync(file,v);
+      assert.throws(()=>api.readSettings(file));
+    }
+    fs.writeFileSync(file,'{"disableAllHooks":true}');
+    assert.equal(api.readSettings(file,true).disableAllHooks,true);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('settings symbolic links are rejected',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kit-unit-'));
+  try{
+    fs.writeFileSync(path.join(dir,'actual'),'{}');
+    fs.symlinkSync(path.join(dir,'actual'),path.join(dir,'linked'));
+    assert.throws(()=>api.readSettings(path.join(dir,'linked')),/符号链接/);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('safeTarget refuses root, HOME, shared storage and target containing settings',()=>{
+  for(const d of ['/','/sdcard/cccodroid/unsafe','/storage/emulated/0/unsafe',os.homedir()])assert.throws(()=>api.safeTarget(d,'/private/settings.json'));
+  assert.throws(()=>api.safeTarget('/private/install','/private/install/settings.json'));
+});
+test('atomic writes replace complete content with private permissions and no temp remnants',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kit-unit-'));
+  try{
+    const f=path.join(dir,'settings.json');
+    api.atomic(f,'first');api.atomic(f,'second');
+    assert.equal(fs.readFileSync(f,'utf8'),'second');
+    assert.equal(fs.statSync(f).mode&0o777,0o600);
+    assert.deepEqual(fs.readdirSync(dir),['settings.json']);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('parser accepts supported flags and rejects unknown or missing values',()=>{
+  assert.deepEqual(api.parse(['--yes','--start','--port','3459']),{yes:true,start:true,port:'3459'});
+  assert.deepEqual(api.parse(['--bundled-runtime','/private/component']),{'bundled-runtime':'/private/component'});
+  assert.deepEqual(api.parse(['--yes','--purge']),{yes:true,purge:true});
+  assert.throws(()=>api.parse(['--api-key','secret']));
+  assert.throws(()=>api.parse(['--dir']));
+  for(const name of ['dir','endpoint','instance'])assert.throws(()=>api.parse(['--'+name,'one','--'+name,'two']),/重复/);
+});
+test('instance options require a complete pair for ensure or uninstall only',()=>{
+  const options={endpoint:'http://127.0.0.1:3459',instance:'1'.repeat(32)};
+  assert.equal(api.instanceOptions('ensure',options),true);
+  assert.equal(api.instanceOptions('uninstall',options),true);
+  assert.equal(api.instanceOptions('uninstall',{}),false);
+  assert.throws(()=>api.instanceOptions('ensure',{}),/必须提供/);
+  for(const command of ['ensure','uninstall']){
+    assert.throws(()=>api.instanceOptions(command,{endpoint:options.endpoint}),/同时提供/);
+    assert.throws(()=>api.instanceOptions(command,{instance:options.instance}),/同时提供/);
+    assert.throws(()=>api.instanceOptions(command,{...options,instance:'wrong'}),/不合法/);
+  }
+  for(const command of ['install','configure','start','status','stop','connection'])assert.throws(()=>api.instanceOptions(command,options),/只适用于/);
+});
+test('purge refuses unowned directories, HOME and symbolic-link targets without deleting data',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kit-purge-'));
+  try{
+    const target=path.join(dir,'owned'),link=path.join(dir,'link');
+    fs.mkdirSync(target);fs.writeFileSync(path.join(target,'keep'),'test-data');
+    assert.throws(()=>api.purgeTarget(target),/本安装器/);
+    assert.throws(()=>api.purgeTarget(os.homedir()));
+    fs.symlinkSync(target,link);
+    assert.throws(()=>api.purgeTarget(link),/符号链接/);
+    assert.equal(fs.readFileSync(path.join(target,'keep'),'utf8'),'test-data');
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('preinstalled dependencies copy privately without symlinking the mutable runtime',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kit-bundled-'));
+  try{
+    const source=path.join(dir,'source'),dest=path.join(dir,'dest');
+    const pkg=path.join(source,'node_modules/@musistudio/claude-code-router');
+    fs.mkdirSync(pkg,{recursive:true});
+    fs.writeFileSync(path.join(pkg,'package.json'),JSON.stringify({version:'1.0.73'}));
+    fs.writeFileSync(path.join(pkg,'cli.js'),'original');
+    fs.symlinkSync('cli.js',path.join(pkg,'local-link'));
+    api.copyBundledRuntime(source,dest);
+    const copied=path.join(dest,'node_modules/@musistudio/claude-code-router/cli.js');
+    fs.writeFileSync(copied,'modified-private-copy');
+    assert.equal(fs.readFileSync(path.join(pkg,'cli.js'),'utf8'),'original');
+    assert.equal(fs.readlinkSync(path.join(dest,'node_modules/@musistudio/claude-code-router/local-link')),'cli.js');
+    fs.symlinkSync('/private/outside',path.join(pkg,'unsafe-link'));
+    assert.throws(()=>api.copyBundledRuntime(source,path.join(dir,'unsafe-dest')),/链接越界/);
+    assert.equal(fs.existsSync(path.join(dir,'unsafe-dest')),false);
+    fs.writeFileSync(path.join(pkg,'package.json'),JSON.stringify({version:'3.0.0'}));
+    assert.throws(()=>api.copyBundledRuntime(source,path.join(dir,'wrong-version')),/版本不匹配/);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

@@ -1,0 +1,29 @@
+name: isolated-tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts --omit=dev --no-audit --no-fund
+      - run: npm test
+        env:
+          TMPDIR: ${{ runner.temp }}
+      - run: python3 tests/test-watchdog-transient.py
+        env:
+          TMPDIR: ${{ runner.temp }}
+      - name: Dependency security gate
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Effective bundled dependency security gate
+        run: node tests/audit-bundle.cjs
+        env:
+          TMPDIR: ${{ runner.temp }}

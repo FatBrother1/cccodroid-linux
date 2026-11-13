@@ -1,0 +1,40 @@
+# 由 cccodroid install.sh 生成；重装会覆盖，不要手工修改。
+# 手动排查：systemctl --user status cccodroid-gateway.service
+# 日志：journalctl --user -u cccodroid-gateway.service -f
+[Unit]
+Description=cccodroid 网关（Claude Code 图形工作台）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@WORKSPACE@
+# HOME 与 CCAPP_HOME 都指向安装前缀下的 home/：配置、.claude 会话、令牌都留在这里。
+Environment="HOME=@HOME_DIR@"
+Environment="CCAPP_HOME=@HOME_DIR@"
+Environment="CCAPP_WORKSPACE=@WORKSPACE@"
+Environment="CCAPP_RUNTIME=@CURRENT@/runtime"
+Environment="CCAPP_PORT=@PORT@"
+# Linux 有正常的 glibc DNS，不需要安卓上的本地 DNS 桥。
+Environment="CCAPP_NO_BRIDGE=1"
+Environment="PATH=@PREFIX@/prefix/bin:@CURRENT@/runtime/node/bin:@CURRENT@/runtime:@HOME_DIR@/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# Linux 上 claude 是普通 glibc 程序：用系统加载器与系统库，不用安卓的 aarch64 加载器 / Termux glibc。
+Environment="CCAPP_LOADER=/lib64/ld-linux-x86-64.so.2"
+Environment="CCAPP_GW_LOADER=/lib64/ld-linux-x86-64.so.2"
+Environment="CCAPP_GLIBC_LIB=/usr/lib"
+Environment="CCAPP_GW_GLIBC_LIB=/usr/lib"
+Environment="CCAPP_SHELL=/bin/bash"
+Environment="TMPDIR=@HOME_DIR@/tmp"
+Environment="LANG=C.UTF-8"
+# 网关自己监听 127.0.0.1 与 127.0.0.2；不要改成对外地址。
+ExecStart="@GATEWAY@" @PORT@
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+# mixed：停止 / 重启时，网关主进程先收 SIGTERM，随后 cgroup 里剩下的进程全部 SIGKILL。
+# 需要比网关活得久的程序（Steam、机器人、开发服务器）必须用 cc-detach 起在这个 cgroup 之外；
+# cccodroid stop / restart / update 发现有脱离进程树的程序时会拒绝执行，除非加 --force。
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

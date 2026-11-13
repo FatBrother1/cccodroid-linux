@@ -1,0 +1,26 @@
+cccodroid
+Copyright 2026 greyoak111 and contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It is a third-party launcher and is not affiliated with or endorsed by Anthropic.
+Claude Code is proprietary software of Anthropic PBC; it is NOT distributed with
+this product. It is downloaded by the user from Anthropic's official channel and
+run unmodified, subject to Anthropic's terms.
+
+Bundled third-party components:
+  - Shizuku-API 13.1.5 (MIT) — third_party/shizuku/LICENSE
+  - xz-decompress 0.2.3 (MIT) — devkit/vendor/xz-decompress (build-time only)
+  - node-forge 1.4.0 (BSD-3-Clause OR GPL-2.0, used under BSD-3-Clause) —
+    third_party/node-forge (build-time only: APK signing in scripts/apklib.mjs)
+  - GNU C Library 2.44 dynamic loader (LGPL-2.1-or-later), shipped as
+    lib/arm64-v8a/libldlinux.so — third_party/glibc/COPYING.LIB; source and
+    build recipe links in third_party/glibc/README.md
+  - 7-Zip 26.06 by Igor Pavlov (GNU LGPL-2.1-or-later, parts BSD; RAR decoding
+    under the unRAR license restriction), built from unmodified upstream source
+    and shipped as lib/arm64-v8a/libcc7zz.so — third_party/7zip/ (License.txt,
+    copying.txt, unRarLicense.txt; source and build recipe in README.md)
+
+The developer toolkit (devkit) released alongside this project consists of
+unmodified Termux packages (path prefix rewritten in place), each distributed
+under its own license; see devkit.lock.json / SBOM.tsv in each devkit release.
