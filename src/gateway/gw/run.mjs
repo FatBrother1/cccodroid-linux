@@ -317,6 +317,9 @@ export async function startRun(item) {
   // 安全模式下钩子全不跑（敏感操作再确认也没了），不问人的几档退回 default
   if (safeModePerm(permMode) !== permMode) { log(`安全模式：权限模式 ${permMode} → default`); permMode = safeModePerm(permMode); }
   run.permMode = permMode;
+  // 用户选了「全部放行」：它就是字面意思。不再弹用户级配置 / 项目配置 / 后台进程 /
+  // 敏感操作再确认这几类卡（guard 钩子也不挂）。需要这些保护就把权限模式切回默认或逐次确认。
+  const trustAll = permMode === "bypassPermissions";
 
   const argv = [
     "-p",
@@ -350,7 +353,7 @@ export async function startRun(item) {
   // 这两段在起进程紧前写成文件再交（见 promptFiles）
   // claude 没有 --output-style 参数（传了直接 unknown option，整条消息失败）；它是 settings 里的 outputStyle。
   // 密钥读取器也在这里（见 settingsArgs）
-  argv.push(...settingsArgs(P));
+  argv.push(...settingsArgs(P, trustAll));
   if (effort) argv.push("--effort", effort);
   // 设置和这一条各自有上限，合起来再按总长截一次（10-31 复核：两边都顶满能超 ARG_MAX，这一轮 spawn 直接 E2BIG）
   const allowed = capList([...(SETTINGS.allowedTools || []), ...(Array.isArray(item.allowedTools) ? item.allowedTools : [])], 400, 512, 8192);
@@ -387,7 +390,7 @@ export async function startRun(item) {
   if (run.aborted) { log("⏹ 起进程前已停止"); return endRun(run, { durationMs: 0 }); }
   // 用户级配置（~/.claude）有没确认的改动、之前的对话留下了后台进程（见 userconf.mjs / leftover.mjs）：先问。
   // 没人看着的（定时任务、空闲压缩）不跑：定时任务按失败记、照任务设置通知。发行版只问回填进来的 MCP 与权限（UC_SEALED）
-  const ucp = ucPending(sealed() ? UC_SEALED : null), procs = leftoverProcs(new Map([...RUNS].filter(([k]) => k !== run.id).map(([k, r]) => [String(k), r.childStart ?? null])));
+  const ucp = trustAll ? null : ucPending(sealed() ? UC_SEALED : null), procs = trustAll ? [] : leftoverProcs(new Map([...RUNS].filter(([k]) => k !== run.id).map(([k, r]) => [String(k), r.childStart ?? null])));
   if (ucp || procs.length) {
     if (run.unattended || run.auto) {
       const msg = tz("Claude Code 的用户级配置有改动还没确认，或者之前的对话留下了后台进程，这次没有运行。打开 cccodroid 发一条消息，在弹出的卡片里确认后再试。");
@@ -419,7 +422,7 @@ export async function startRun(item) {
   }
   // 项目自带会自动运行的配置（钩子、.mcp.json…，见 projtrust.mjs）、又没被认过：先问；不同意就不加载项目级配置，这一轮照常
   // 发行版：项目级配置一概不读（edition.mjs），不用问
-  const proj = sealed() || P.local ? null : projectRisks(cwd);
+  const proj = trustAll || sealed() || P.local ? null : projectRisks(cwd);
   if (proj && !projectTrusted(cwd, proj.fp)) {
     const ok = run.unattended || run.auto ? false : await askProjectTrust(run, cwd, proj, emit);
     if (run.aborted) { log("⏹ 等项目配置确认时停止"); return endRun(run, { durationMs: 0 }); }
@@ -465,7 +468,7 @@ export async function startRun(item) {
     argv.push(...prep.args);
     if (prep.settings && Object.keys(prep.settings).length) argv.push("--settings", JSON.stringify(prep.settings));
   }
-  const drift = ucBeforeRun(run, sealed() ? UC_SEALED : null);
+  const drift = trustAll ? [] : ucBeforeRun(run, sealed() ? UC_SEALED : null);
   if (drift.length) {
     emit({ type: "error", message: tr(LAST_LANG, tz("用户级配置在确认之后又被改了，这一轮没有启动：{list}。再发一条消息，在弹出的卡片里确认。", { list: drift.slice(0, 6).join(", ") })) });
     return endRun(run, { failed: true });
@@ -615,7 +618,16 @@ export async function startRun(item) {
   run.perms = new Map();
   const writeCtl = (o) => { try { child.stdin.write(JSON.stringify(o) + "\n"); return true; } catch { return false; } };
   let ctlN = 0;
-  run.setMode = (mode) => { run.permMode = mode; return run.inputOpen && writeCtl({ type: "control_request", request_id: "ccapp-" + (++ctlN), request: { subtype: "set_permission_mode", mode } }); };
+  run.setMode = (mode) => {
+    run.permMode = mode;
+    // 切到「全部放行」时，已经弹出的用户级配置 / 项目配置卡也一并按允许结束，别让它继续等。
+    if (mode === "bypassPermissions" && run.perms) {
+      for (const [pid, pp] of [...run.perms]) {
+        if (pp.tool === "UserConfig" || pp.tool === "ProjectConfig") { try { run.answerPerm?.(pid, { behavior: "allow" }); } catch {} }
+      }
+    }
+    return run.inputOpen && writeCtl({ type: "control_request", request_id: "ccapp-" + (++ctlN), request: { subtype: "set_permission_mode", mode } });
+  };
   // 停掉一个后台任务（stop_task 控制请求；claude 停完会再报一次 background_tasks_changed）
   run.stopTask = (taskId) => run.inputOpen && run.bgList.some((t) => t.id === taskId) &&
     writeCtl({ type: "control_request", request_id: "ccapp-" + (++ctlN), request: { subtype: "stop_task", task_id: taskId } }) && (run.stopAsked = true);
@@ -680,8 +692,8 @@ export async function startRun(item) {
         return;
       }
       // 全部放行时 claude 不该再来问；来了（子代理没继承到模式之类）就直接放行，必须由人回答的（AskUserQuestion 等）照问。
-      // 敏感操作再确认的卡片例外：那是专门为全部放行加的一道兜底
-      if (run.permMode === "bypassPermissions" && !p.interactive && !HUMAN_TOOLS.has(p.tool) && !p.guard) {
+      // 用户级配置 / 敏感操作这些卡也一起放行：既然选了全部放行，就不再拿它们兜底。
+      if (run.permMode === "bypassPermissions" && !p.interactive && !HUMAN_TOOLS.has(p.tool)) {
         log(`✓ 全部放行，自动允许 ${p.tool}${p.agentId ? "（子代理）" : ""} ${argLen(p.input)}`);
         writeCtl({ type: "control_response", response: { subtype: "success", request_id: id, response: { behavior: "allow", updatedInput: p.input } } });
         return;

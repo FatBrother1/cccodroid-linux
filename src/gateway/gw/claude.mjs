@@ -610,14 +610,14 @@ export function readLedger(n = 100) {
 
 /** p：这一轮用的那家（缺省 = 全局生效的）。密钥文件按家分开 —— 几家同时在跑时，
  *  claude 每次要钥匙都现读文件，共用一个文件会读到别家的 */
-export function settingsArgs(p = PROVIDER) {
+export function settingsArgs(p = PROVIDER, trustAll = false) {
   const st = {};
   const safe = safeMode();
   // 只认列得出来的（内置 + 用户目录）：旧设置里存着工作区那份的名字，这里不再传（输出风格目录的安全报告）
   if (SETTINGS.outputStyle && !safe && outputStyles().some((o) => o.id === SETTINGS.outputStyle)) st.outputStyle = SETTINGS.outputStyle;
   if (!p.local) {
     st.hooks = archiveHooks();   // 压缩后提醒建档（只陈述事实，规则在系统提示里，见 archive.mjs）
-    const g = guardHooks();
+    const g = trustAll ? null : guardHooks();
     // 用户级、项目级设置里的 disableAllHooks:true 会连这里挂的钩子一起关掉；这里显式写 false 压过它们（2.1.311 实测）。
     // 代价是用户在设置里关掉的钩子也会跑 —— 扩展页的「关闭全部钩子」因此改成把钩子挪进暂存键（见 extensions.mjs）
     if (g) { st.hooks.PreToolUse = g; st.disableAllHooks = false; }
