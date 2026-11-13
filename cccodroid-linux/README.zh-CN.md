@@ -12,8 +12,8 @@ systemd 用户服务、一个桌面条目。
 ## 1. 快速安装
 
 ```bash
-tar -xzf cccodroid-0.5.2-linux-x86_64.tar.gz
-cd cccodroid-0.5.2
+tar -xzf cccodroid-0.1.0-linux-x86_64.tar.gz
+cd cccodroid-0.1.0
 ./install.sh
 ```
 
@@ -38,13 +38,13 @@ export PATH="$HOME/.local/bin:$PATH"
 已经解压好了、或者想直接指定 tarball：
 
 ```bash
-./install.sh /路径/cccodroid-0.4.0-linux-x86_64.tar.gz
+./install.sh /路径/cccodroid-0.1.0-linux-x86_64.tar.gz
 ```
 
 自定义安装位置：
 
 ```bash
-./install.sh --prefix "$HOME/Applications/cccodroid" /路径/cccodroid-0.4.0-linux-x86_64.tar.gz
+./install.sh --prefix "$HOME/Applications/cccodroid" /路径/cccodroid-0.1.0-linux-x86_64.tar.gz
 ```
 
 常用选项：
@@ -74,7 +74,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ### 这是一个「只留 Linux 用得到的功能」的分支
 
-0.4.0 起，网关和网页里只为安卓宿主应用、Termux 工具包、Shizuku 授权服务的功能已整体拆除，
+0.1.0 起，网关和网页里只为安卓宿主应用、Termux 工具包、Shizuku 授权服务的功能已整体拆除，
 界面上不会再出现：灵动岛（工作岛）、Shizuku 特权授权与设备工具、内存管家、耗电统计、
 组件市场 / 工具包模块 / 自定义组件 / 对账 / 残留清理、端侧小模型、OpenAI 桥接组件、
 公告与反馈入口、Office 转 PDF、截屏、执行方式与滚动冻结脱困、安卓分享与主题联动、
@@ -349,7 +349,7 @@ cccodroid logs
 3. 运行：
 
 ```bash
-cccodroid update /路径/cccodroid-0.3.0-linux-x86_64.tar.gz   # 同名 .sha256 / .sig 旁文件会自动核对
+cccodroid update /路径/cccodroid-0.1.0-linux-x86_64.tar.gz   # 同名 .sha256 / .sig 旁文件会自动核对
 cat 包.tar.gz | cccodroid update -                            # 也可以走标准输入
 ```
 
@@ -401,7 +401,7 @@ cccodroid prune [--keep N] [--dry-run]   # 删旧版本目录，永远保留当�
 想再回到新版本要用新版本目录里的命令行：
 
 ```bash
-~/.local/share/cccodroid/versions/0.3.0/bin/cccodroid rollback
+~/.local/share/cccodroid/versions/0.1.0/bin/cccodroid rollback
 ```
 
 ---
@@ -453,9 +453,9 @@ cccodroid prune [--keep N] [--dry-run]   # 删旧版本目录，永远保留当�
 产物：
 
 ```text
-dist/cccodroid-0.3.0-linux-x86_64.tar.gz
-dist/cccodroid-0.3.0-linux-x86_64.tar.gz.sha256
-dist/cccodroid-0.3.0-linux-x86_64.tar.gz.sig        # 只有加了 --sign-key 才有
+dist/cccodroid-0.1.0-linux-x86_64.tar.gz
+dist/cccodroid-0.1.0-linux-x86_64.tar.gz.sha256
+dist/cccodroid-0.1.0-linux-x86_64.tar.gz.sig        # 只有加了 --sign-key 才有
 ```
 
 签名发布（可选）：`--sign-key 私钥` 用 OpenSSH 的 `ssh-keygen -Y sign` 给 tar.gz 签名（ed25519，
@@ -596,7 +596,7 @@ rm -rf ~/.local/share/cccodroid   # 若之前卸载时选择了保留
 ## 13. 发行文件清单
 
 ```text
-VERSION                                   # 0.4.0
+VERSION                                   # 0.1.0
 install.sh                                # 安装 / 卸载入口
 uninstall.sh                              # 卸载薄封装
 build-bundle.sh                           # 构建离线 bundle

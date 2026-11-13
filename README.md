@@ -27,11 +27,11 @@ SteamOS / Arch 系桌面上：一个 Qt6 原生窗口、一套 systemd 用户服
 ## 下载安装（推荐）
 
 到 [Releases](https://github.com/FatBrother1/cccodroid-linux/releases) 下载
-`cccodroid-0.5.2-linux-x86_64.tar.gz`（附 `.sha256` 与 `.sig`）：
+`cccodroid-0.1.0-linux-x86_64.tar.gz`（附 `.sha256` 与 `.sig`）：
 
 ```bash
-tar -xzf cccodroid-0.5.2-linux-x86_64.tar.gz
-cd cccodroid-0.5.2
+tar -xzf cccodroid-0.1.0-linux-x86_64.tar.gz
+cd cccodroid-0.1.0
 ./install.sh            # 不需要 root；装到 ~/.local/share/cccodroid
 cccodroid status
 cccodroid open          # 打开原生窗口
@@ -67,7 +67,7 @@ bash cccodroid-linux/build-bundle.sh \
 - 本移植基于上游网关源码，做 Linux 适配、Android 专属功能移除，并加入本地桥与页面操控 MCP。
 - 上游发新版后的流程：把上游合进本仓库的 `main`，再把本地移植提交 rebase 到新的上游之上，
   重建发行包并重跑验收/部署脚本；冲突主要集中在网关与前端的共享文件。
-- 版本对应：移植版本 `v0.1.0` 对应内置 cccodroid 应用版本 `0.5.2`。
+- 版本：项目与应用统一为 `0.1.0`。
 
 ## 致谢
 

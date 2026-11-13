@@ -2,11 +2,11 @@
 
 ## v0.1.0（2026-11-13）
 
-第一个公开版本。内置应用版本 0.5.2，基于上游 cccodroid 网关源码。
+第一个公开版本。版本号 0.1.0，基于上游 cccodroid 网关源码。
 
 ### 新增
 
-- 可直接安装的发行包（`cccodroid-0.5.2-linux-x86_64.tar.gz`）：解压后 `./install.sh` 即可；
+- 可直接安装的发行包（`cccodroid-0.1.0-linux-x86_64.tar.gz`）：解压后 `./install.sh` 即可；
   首次安装会从 npm 官方平台包安装 Claude Code（不随包分发）。
 - Qt6 原生窗口外壳：单实例、缩放/全屏、大小记忆、下载与文件选择、控制台日志。
 - Steam 游戏模式入口：`cccodroid steam add|remove|status`，手柄映射与前台启动脚本。
