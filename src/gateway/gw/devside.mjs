@@ -45,6 +45,17 @@ const cmpVer = (a, b) => {
   for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d < 0 ? -1 : 1; }
   return 0;
 };
+// ccapp-update.json 里可能留着升级前查到的“最新版”（例如升到 0.1.2 后还存着
+// 0.1.1）。它比当前版本旧，不能再当成可更新目标显示成“0.1.2 → 0.1.1”。
+try {
+  if (devUpd.app.latest && (!APP_VERSION || cmpVer(devUpd.app.latest, APP_VERSION) <= 0)) {
+    devUpd.app.latest = "";
+    if (devUpd.app.state === "available") {
+      devUpd.app.state = APP_VERSION ? "uptodate" : "unknown";
+      devUpd.app.message = APP_VERSION ? tz("已是最新（{v}）", { v: APP_VERSION }) : "";
+    }
+  }
+} catch {}
 
 /** 跑某个 claude 二进制的 --version（新下载的那个在换上去之前先这样试跑一次） */
 function claudeVersionOf(bin) {
@@ -70,16 +81,29 @@ async function npmMeta(force = false) {
 }
 
 // 应用本体（cccodroid-linux）的最新发布：GitHub Releases 的 latest（只读公共 API，不需要登录）。
+// 国内网络直连 api.github.com 经常 fetch failed；gh-proxy.com 能代理 API（其他几个
+// 常见前缀只代理 release 资产，不代理 API），所以直连失败时走它。
+const GH_API = `https://api.github.com/repos/${APP_REPO}/releases?per_page=30`;
+const GH_API_PROXIES = ["https://gh-proxy.com/"];
 let appCache = { at: 0, data: null };
 async function appLatest(force = false) {
   if (!force && appCache.data && Date.now() - appCache.at < 600e3) return appCache.data;
   // /releases/latest 会把 v0.1.0-deb 这种「包型发布」也算进去；这里只认
   // 形如 v0.1.0 且带 tar.gz 的正式发布，否则会把 deb 发布的标签当成应用版本。
-  const r = await fetch(`https://api.github.com/repos/${APP_REPO}/releases?per_page=30`, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "cccodroid-linux" },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!r.ok) throw new Error("GitHub HTTP " + r.status);
+  let r = null, last = null;
+  for (const [u, ms] of [[GH_API, 12000], ...GH_API_PROXIES.map((p) => [p + GH_API, 20000])]) {
+    try {
+      const rr = await fetch(u, {
+        headers: { Accept: "application/vnd.github+json", "User-Agent": "cccodroid-linux" },
+        signal: AbortSignal.timeout(ms),
+      });
+      if (rr.ok) { r = rr; break; }
+      last = new Error("GitHub HTTP " + rr.status);
+    } catch (e) {
+      last = e;
+    }
+  }
+  if (!r) throw last || new Error("fetch failed");
   const list = await r.json();
   const rel = (Array.isArray(list) ? list : []).find((x) =>
     x && !x.draft && !x.prerelease && /^v\d+\.\d+\.\d+$/.test(String(x.tag_name || "")) &&
@@ -124,6 +148,9 @@ async function appCheck(force = false) {
     if (d > 0) { a.state = "available"; a.message = ""; }
     else { a.state = "uptodate"; a.message = tz("已是最新（{v}）", { v: a.current }); }
   } catch (e) {
+    // 检查失败时保留“上次查到的、确实比当前新”的 latest 才有意义；
+    // 比当前旧或等于当前的一律清掉，避免界面显示 0.1.2 → 0.1.1。
+    if (a.latest && (!a.current || cmpVer(a.latest, a.current) <= 0)) a.latest = "";
     a.state = "error"; a.message = tz("检查应用更新失败：{err}", { err: e.message });
   }
 }

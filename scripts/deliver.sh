@@ -6,9 +6,9 @@
 #   deliver.sh --from <源目录> --name <产物目录名> [--date YYYY-MM-DD] [--force] 文件...
 #
 # 例：
-#   deliver.sh --from /sdcard/cccodroid/交付/cccodroid-linux-0.1.2 \
-#     --name cccodroid-linux-0.1.2 --date 2026-11-14 \
-#     cccodroid-0.1.2-linux-x86_64.tar.gz cccodroid-0.1.2-linux-x86_64.tar.gz.sha256 ...
+#   deliver.sh --from /sdcard/cccodroid/交付/cccodroid-linux-0.1.3 \
+#     --name cccodroid-linux-0.1.3 --date 2026-11-14 \
+#     cccodroid-0.1.3-linux-x86_64.tar.gz cccodroid-0.1.3-linux-x86_64.tar.gz.sha256 ...
 set -euo pipefail
 
 ROOT="${CCCODROID_DELIVER_ROOT:-/sdcard/cccodroid/交付}"

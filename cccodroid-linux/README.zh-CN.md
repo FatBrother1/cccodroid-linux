@@ -12,8 +12,8 @@ systemd 用户服务、一个桌面条目。
 ## 1. 快速安装
 
 ```bash
-tar -xzf cccodroid-0.1.2-linux-x86_64.tar.gz
-cd cccodroid-0.1.2
+tar -xzf cccodroid-0.1.3-linux-x86_64.tar.gz
+cd cccodroid-0.1.3
 ./install.sh
 ```
 
@@ -38,13 +38,13 @@ export PATH="$HOME/.local/bin:$PATH"
 已经解压好了、或者想直接指定 tarball：
 
 ```bash
-./install.sh /路径/cccodroid-0.1.2-linux-x86_64.tar.gz
+./install.sh /路径/cccodroid-0.1.3-linux-x86_64.tar.gz
 ```
 
 自定义安装位置：
 
 ```bash
-./install.sh --prefix "$HOME/Applications/cccodroid" /路径/cccodroid-0.1.2-linux-x86_64.tar.gz
+./install.sh --prefix "$HOME/Applications/cccodroid" /路径/cccodroid-0.1.3-linux-x86_64.tar.gz
 ```
 
 常用选项：
@@ -91,7 +91,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```text
 ~/.local/share/cccodroid/
 ├── versions/
-│   ├── 0.1.2/                 # 一个版本一个目录，互不覆盖
+│   ├── 0.1.3/                 # 一个版本一个目录，互不覆盖
 │   │   ├── VERSION
 │   │   ├── BUILD-INFO         # 构建时间、Node/Claude 版本、来源
 │   │   ├── SHA256SUMS
@@ -349,7 +349,7 @@ cccodroid logs
 3. 运行：
 
 ```bash
-cccodroid update /路径/cccodroid-0.1.2-linux-x86_64.tar.gz   # 同名 .sha256 / .sig 旁文件会自动核对
+cccodroid update /路径/cccodroid-0.1.3-linux-x86_64.tar.gz   # 同名 .sha256 / .sig 旁文件会自动核对
 cat 包.tar.gz | cccodroid update -                            # 也可以走标准输入
 ```
 
@@ -401,7 +401,7 @@ cccodroid prune [--keep N] [--dry-run]   # 删旧版本目录，永远保留当�
 想再回到新版本要用新版本目录里的命令行：
 
 ```bash
-~/.local/share/cccodroid/versions/0.1.2/bin/cccodroid rollback
+~/.local/share/cccodroid/versions/0.1.3/bin/cccodroid rollback
 ```
 
 ---
@@ -453,9 +453,9 @@ cccodroid prune [--keep N] [--dry-run]   # 删旧版本目录，永远保留当�
 产物：
 
 ```text
-dist/cccodroid-0.1.2-linux-x86_64.tar.gz
-dist/cccodroid-0.1.2-linux-x86_64.tar.gz.sha256
-dist/cccodroid-0.1.2-linux-x86_64.tar.gz.sig        # 只有加了 --sign-key 才有
+dist/cccodroid-0.1.3-linux-x86_64.tar.gz
+dist/cccodroid-0.1.3-linux-x86_64.tar.gz.sha256
+dist/cccodroid-0.1.3-linux-x86_64.tar.gz.sig        # 只有加了 --sign-key 才有
 ```
 
 签名发布（可选）：`--sign-key 私钥` 用 OpenSSH 的 `ssh-keygen -Y sign` 给 tar.gz 签名（ed25519，
@@ -596,7 +596,7 @@ rm -rf ~/.local/share/cccodroid   # 若之前卸载时选择了保留
 ## 13. 发行文件清单
 
 ```text
-VERSION                                   # 0.1.2
+VERSION                                   # 0.1.3
 install.sh                                # 安装 / 卸载入口
 uninstall.sh                              # 卸载薄封装
 build-bundle.sh                           # 构建离线 bundle
