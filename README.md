@@ -6,8 +6,8 @@ SteamOS / Arch 系桌面上：一个 Qt6 原生窗口、一套 systemd 用户服
 
 **本项目是社区移植，不是 cccodroid 官方项目。** 上游版权归 Grey Oak 与 cccodroid 贡献者所有，详见「致谢」。
 
-**产品标识：`cccodroid Steam Deck 0.1.3`。** 这里的 `0.1.3` 是移植版自己的版本号，不是上游 cccodroid 的版本号；
-上游目前是 0.6.x。看到 `0.1.3` 时请认准 `Steam Deck` 这个标识。
+**产品标识：`cccodroid Steam Deck 0.1.4`。** 这里的 `0.1.4` 是移植版自己的版本号，不是上游 cccodroid 的版本号；
+上游目前是 0.6.x。看到 `0.1.4` 时请认准 `Steam Deck` 这个标识。
 
 ![cccodroid-linux 界面](docs/ui.png)
 
@@ -60,11 +60,11 @@ cccodroid 里跑的是 Claude Code，一个带工具的 agent，不是只会聊�
 > 第一次用 Linux / Steam Deck？看 **[大白话安装教程](docs/INSTALL.zh-CN.md)**，一步步照着做就行。
 
 到 [Releases](https://github.com/FatBrother1/cccodroid-linux/releases) 下载
-`cccodroid-0.1.3-linux-x86_64.tar.gz`（附 `.sha256` 与 `.sig`）：
+`cccodroid-0.1.4-linux-x86_64.tar.gz`（附 `.sha256` 与 `.sig`）：
 
 ```bash
-tar -xzf cccodroid-0.1.3-linux-x86_64.tar.gz
-cd cccodroid-0.1.3
+tar -xzf cccodroid-0.1.4-linux-x86_64.tar.gz
+cd cccodroid-0.1.4
 ./install.sh            # 不需要 root；装到 ~/.local/share/cccodroid
 cccodroid status
 cccodroid open          # 打开原生窗口
@@ -79,10 +79,10 @@ cccodroid open          # 打开原生窗口
 
 ### Debian / Ubuntu 的一键 .deb
 
-`.deb` 单独发布在 [v0.1.3-deb](https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.3-deb)。Debian / Ubuntu（amd64）也可以直接装，系统装到 `/opt/cccodroid`，首次运行 `cccodroid` 时为当前用户初始化：
+`.deb` 单独发布在 [v0.1.4-deb](https://github.com/FatBrother1/cccodroid-linux/releases/tag/v0.1.4-deb)。Debian / Ubuntu（amd64）也可以直接装，系统装到 `/opt/cccodroid`，首次运行 `cccodroid` 时为当前用户初始化：
 
 ```bash
-sudo apt install ./cccodroid_0.1.3_amd64.deb
+sudo apt install ./cccodroid_0.1.4_amd64.deb
 cccodroid open
 ```
 
@@ -116,7 +116,7 @@ bash cccodroid-linux/build-bundle.sh \
   1. `bash scripts/sync-upstream.sh`：拉 `upstream/main`，把基线以来的网关改动写到 `dist-upstream/`；
   2. 按 [`docs/UPSTREAM.md`](docs/UPSTREAM.md) 把改动重放进 `src/gateway/`（保留 Linux 适配与 Android 功能移除）；
   3. 重建发行包、跑验收，最后更新 `UPSTREAM-BASE`。
-- 版本：项目与应用统一为 `0.1.3`。
+- 版本：项目与应用统一为 `0.1.4`。
 
 ## 致谢
 

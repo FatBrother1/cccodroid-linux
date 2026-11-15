@@ -38,8 +38,11 @@
       const showLatest = it.latest && it.latest !== it.current &&
         ["available", "downloading", "ready", "installing", "verifying"].includes(it.state);
       const ver = esc(it.current || "?") + (showLatest ? " → " + esc(it.latest) : "");
-      const prog = it.state === "downloading" && it.total ? `（${fmtSize(it.done) || "0 MB"} / ${fmtSize(it.total)} · ${Math.floor(it.done * 100 / it.total)}%）`
-        : (it.state === "installing" || it.state === "verifying") && it.total ? `（${Math.floor(it.done * 100 / it.total)}%）` : "";
+      // 进度封顶：即使后端计数器被重启/并发下载带偏，也不显示 110%。
+      const doneShown = it.total ? Math.min(it.done || 0, it.total) : (it.done || 0);
+      const pct = it.total ? Math.min(100, Math.floor(doneShown * 100 / it.total)) : 0;
+      const prog = it.state === "downloading" && it.total ? `（${fmtSize(doneShown) || "0 MB"} / ${fmtSize(it.total)} · ${pct}%）`
+        : (it.state === "installing" || it.state === "verifying") && it.total ? `（${pct}%）` : "";
       const cls = it.state === "error" || it.state === "damaged" || it.state === "missing" ? "err" : it.state === "uptodate" ? "ok" : it.state === "unknown" ? "" : "warn";
       const btn = it.state === "missing" ? t("安装…") : it.state === "available" ? (it.id === "claude" ? t("更新") : t("下载并安装"))
         : it.state === "ready" ? t("安装") : it.state === "damaged" ? t("修复") : it.state === "error" && it.latest ? t("重试") : "";

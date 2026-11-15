@@ -120,18 +120,23 @@ async function appLatest(force = false) {
 // GitHub Releases 的资产直链在部分网络（尤其国内）连不上，但 API 能通。按顺序试直链和
 // 三个常用 GitHub 加速前缀；只给「拿到响应头」设超时，开始收 body 后不再掐断大文件。
 const GH_PROXIES = ["https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/"];
-async function fetchAsset(url, timeoutMs = 15000) {
+async function fetchAsset(url, timeoutMs = 15000, outerSignal = null) {
   let last = null;
   for (const u of [url, ...GH_PROXIES.map((p) => p + url)]) {
+    if (outerSignal?.aborted) throw new Error("下载已取消");
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const r = await fetch(u, { signal: ctrl.signal });
+      const signal = outerSignal && AbortSignal.any
+        ? AbortSignal.any([ctrl.signal, outerSignal])
+        : ctrl.signal;
+      const r = await fetch(u, { signal });
       clearTimeout(timer);
       if (r.ok || r.status === 206) return r;
       last = new Error("HTTP " + r.status);
     } catch (e) {
       clearTimeout(timer);
+      if (outerSignal?.aborted) throw new Error("下载已取消");
       last = e;
     }
   }
@@ -141,9 +146,14 @@ async function fetchAsset(url, timeoutMs = 15000) {
 async function appCheck(force = false) {
   const a = devUpd.app;
   if (!a.current) { a.state = "unknown"; a.message = tz("开发布局：读不到应用版本"); return; }
+  // 下载/安装途中不要改状态：否则“检查更新”会把 downloading 冲成 available，
+  // 下载按钮再次可点，第二个下载流和第一个同时往 a.done 里加字节，进度就会超过 100%。
+  if (["downloading", "installing", "verifying"].includes(a.state)) return;
   try {
     const j = await appLatest(force);
     a.latest = j.version;
+    // 检查请求可能比下载先发出；回来时已经在下载/安装就不许改状态（同上）。
+    if (["downloading", "installing", "verifying"].includes(a.state)) return;
     const d = cmpVer(j.version, a.current);
     if (d > 0) { a.state = "available"; a.message = ""; }
     else { a.state = "uptodate"; a.message = tz("已是最新（{v}）", { v: a.current }); }
@@ -330,12 +340,16 @@ async function devUpdInstall() {
  * 交给 `cccodroid update`（它自己会用已装版本的发布公钥验签、原子切 current、重启网关）。
  * 必须放到 systemd-run 的独立 unit 里跑：update 会重启网关，网关 cgroup 里的子进程会被一起杀掉。
  */
+let appDl = null;   // 正在跑的更新下载；同时只允许一个，避免两个流共用一个 a.done
 async function devUpdInstallApp() {
   const a = devUpd.app;
-  if (!a.current || a.state === "downloading" || a.state === "installing") return;
+  if (!a.current || a.state === "downloading" || a.state === "installing" || appDl) return;
+  const ctrl = appDl = new AbortController();
+  const signal = ctrl.signal;
   a.state = "downloading"; a.message = tz("正在下载…"); a.done = 0; a.total = 0; devUpdSave();
   try {
     const j = await appLatest(true);
+    if (signal.aborted) throw new Error("下载已取消");
     if (!j.tar || !j.sha) throw new Error(tz("这个发布里没有 tar.gz 或 .sha256"));
     if (cmpVer(j.version, a.current) <= 0) { a.state = "uptodate"; a.message = tz("已是最新（{v}）", { v: a.current }); devUpdSave(); return; }
     const dir = path.join(CFG.home, "updates");
@@ -343,11 +357,18 @@ async function devUpdInstallApp() {
     const name = path.basename(String(j.tar.name || "cccodroid.tar.gz"));
     const file = path.join(dir, name), part = file + ".part";
     fs.rmSync(part, { force: true });
-    const r = await fetchAsset(j.tar.browser_download_url, 15000);
+    const r = await fetchAsset(j.tar.browser_download_url, 15000, signal);
     if (!r.ok) throw new Error("HTTP " + r.status);
     a.total = Number(r.headers.get("content-length") || 0);
     const out = fs.openSync(part, "w");
-    try { for await (const chunk of r.body) { fs.writeSync(out, chunk); a.done += chunk.length; } }
+    try {
+      for await (const chunk of r.body) {
+        if (signal.aborted) throw new Error("下载已取消");
+        fs.writeSync(out, chunk);
+        a.done += chunk.length;
+        if (a.total && a.done > a.total) a.done = a.total;   // 进度不越过 100%
+      }
+    }
     finally { fs.closeSync(out); }
     a.message = tz("校验 sha256…"); devUpdSave();
     const sr = await fetchAsset(j.sha.browser_download_url, 20000);
@@ -372,6 +393,8 @@ async function devUpdInstallApp() {
     });
   } catch (e) {
     a.state = "error"; a.message = e.message; devUpdSave();
+  } finally {
+    if (appDl === ctrl) appDl = null;
   }
 }
 
