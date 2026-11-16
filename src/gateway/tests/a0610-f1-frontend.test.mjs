@@ -224,3 +224,13 @@ test("f1 新增文案：九种语言的词典里都有（暂存的 i18n-f1.json 
     }
   }
 });
+
+test("更新列表渲染前声明 act（0.1.4/0.1.5 漏掉时整块列表不渲染）", () => {
+  const src = read("app/10-settings-device.js");
+  const a = src.indexOf('$("upd-items").innerHTML = st.items.map');
+  const b = src.indexOf('}).join("");', a);
+  assert.ok(a > 0 && b > a, "更新列表渲染块找不到");
+  const block = src.slice(a, b);
+  assert.ok(block.includes('const act = it.state === "damaged"'), "act 没有声明");
+  assert.ok(block.indexOf("const act") < block.indexOf("${act ?"), "act 必须先声明再使用");
+});
