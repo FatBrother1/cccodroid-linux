@@ -208,12 +208,16 @@ Window {
     // 窗格的网页视图只在显示时才存在（Loader），关掉就销毁：历史、播放、网络一并释放，下次打开从头开始。
     function paneHide(fromUser) {
         var wasFull = win.fullBrowser
+        var hadFocus = !!(pane.pv && pane.pv.activeFocus)
         win.paneShown = false
         win.fullBrowser = false
         win.panePending = ""
         addrInput.text = ""
         if (fromUser && !wasFull)
             view.runJavaScript("window.__ccBrowserClosed && window.__ccBrowserClosed()")
+        // 窗格的网页视图关掉就销毁了；焦点要还回主页面，否则键盘 / 手柄的按键没有接收者（上游 v0.7.1）
+        if (hadFocus)
+            view.forceActiveFocus()
     }
 
     // ── 保存到（CCApp.saveAs）─────────────────────────────────────

@@ -62,9 +62,18 @@ test("J.10 没有 SKILL.md 的同名目录会列出来，能删掉", async () =>
 });
 
 test("J.6 /api/commands 告诉界面是否发行版（插入时加 /user: 前缀）", async () => {
+  const { _setSealed } = await import("../gw/edition.mjs");
+  // SteamOS 移植默认按开发版运行，不封口；两种值都要如实回给界面
+  _setSealed(false);
   const r = await go.get("/api/commands");
   assert.equal(r.status, 200);
-  assert.equal(r.body.sealed, true);
+  assert.equal(r.body.sealed, false);
+  _setSealed(true);
+  try {
+    const s = await go.get("/api/commands");
+    assert.equal(s.status, 200);
+    assert.equal(s.body.sealed, true);
+  } finally { _setSealed(false); }
   const src = fs.readFileSync(path.join(APP, "08-extensions.js"), "utf8");
   assert.match(src, /UC\.data\.sealed \? "\/user:" : "\/"/);
 });

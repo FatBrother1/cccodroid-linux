@@ -206,9 +206,12 @@ test("移动端：从输入区按钮起手不算抽屉手势", () => {
 });
 
 test("app.js 加载失败时静态壳给重试提示（#182 S-02 网页端半）", () => {
-  assert.ok(indexHtml.includes("界面脚本没能加载，点这里重试"));
-  assert.ok(indexHtml.includes("if (window.__cc) return;"));
-  assert.ok(indexHtml.includes("location.reload()"));
+  // SteamOS 移植：CSP 不允许内联脚本，兜底挪到 fallback.js；静态壳只负责加载它
+  const fallback = fs.readFileSync(new URL("../web/fallback.js", import.meta.url), "utf8");
+  assert.ok(indexHtml.includes('<script src="/fallback.js"></script>'));
+  assert.ok(fallback.includes("界面脚本没能加载，点这里重试"));
+  assert.ok(fallback.includes("if (window.__cc) return;"));
+  assert.ok(fallback.includes("location.reload()"));
 });
 
 test("f1 新增文案：九种语言的词典里都有（暂存的 i18n-f1.json 已灌进词典、移出仓库）", () => {

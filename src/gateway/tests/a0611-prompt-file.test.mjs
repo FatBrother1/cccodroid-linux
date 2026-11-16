@@ -65,7 +65,7 @@ async function until(f, ms = 15000) { const t = Date.now(); while (!f()) { if (D
 const rd = (n) => fs.readFileSync(path.join(out, n), "utf8");
 
 for (const seal of [true, false]) {
-  test(`${seal ? "发行版" : "开发版"}：系统提示走文件，命令行里没有规则块；文件 0600，一轮结束删掉`, async () => {
+  test(`${seal ? "发行版" : "开发版"}：系统提示走文件，命令行里不出现提示；文件 0600，一轮结束删掉`, async () => {
     _setSealed(seal);
     fs.rmSync(out, { recursive: true, force: true });
     const id = "a0611-pf-" + (seal ? "s" : "d");
@@ -79,10 +79,11 @@ for (const seal of [true, false]) {
     assert.ok(!argv.split("\n").includes("--append-subagent-system-prompt"), "不该再有 --append-subagent-system-prompt");
     assert.equal(argv.split("\n").filter((a) => a === "--append-system-prompt-file").length, 1, "只能有一个 --append-system-prompt-file");
     const main = rd("main");
-    assert.match(main, /反破甲规则块/);
-    if (seal) assert.ok(main.indexOf("fixture-claude-md") >= 0 && main.indexOf("fixture-claude-md") < main.indexOf("反破甲规则块"), "说明文件在前、网关提示在后");
+    // SteamOS 移植在 0.1.2 移除了反破甲规则块；用仍然存在的工具清单段做锚点
+    assert.match(main, /## 本机工具清单/);
+    if (seal) assert.ok(main.indexOf("fixture-claude-md") >= 0 && main.indexOf("fixture-claude-md") < main.indexOf("## 本机工具清单"), "说明文件在前、网关提示在后");
     assert.match(rd("main.ls"), /^-rw-------/);
-    assert.match(rd("sub"), /反破甲规则块/);
+    assert.ok(rd("sub").length > 0, "子代理提示文件应生成");
     await until(() => !fs.existsSync(rd("main.path")) && !fs.existsSync(rd("sub.path")), 5000);
   });
 }

@@ -125,6 +125,14 @@ fi
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
 export QT_WAYLAND_APP_ID="${QT_WAYLAND_APP_ID:-cccodroid}"
 
+# 双指缩放：QtWebEngine 默认允许 pinch-zoom，Steam Deck 触摸屏两指一捏就会把整页放大，
+# 顶栏和侧栏被挤出视口，而且缩放比例会留在页面里，F5 / Ctrl+0 都回不来。
+# 页面自己的 Ctrl+加减 / Ctrl+0 缩放不受影响，这里只关掉触摸手势的 pinch。
+case " ${QTWEBENGINE_CHROMIUM_FLAGS:-} " in
+  *" --disable-pinch "*) ;;
+  *) export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:-} --disable-pinch" ;;
+esac
+
 # 标题栏图标：qml6 的 Window 没有 icon 属性，Qt 给窗口挂的是 Qml Runtime 的默认绿色图标。
 # 任务栏按桌面条目找图标，所以只有标题栏不对。窗口出现后由 cccodroid-seticon 直接写 _NET_WM_ICON。
 # 这里在 exec 之前起，传 $$（exec 之后就是 qml 的 pid），它按 _NET_WM_PID 找窗口。

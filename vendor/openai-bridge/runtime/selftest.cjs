@@ -117,6 +117,23 @@ async function main() {
       console.log(`PASS ${model} stream=${stream}; text + effort preserved`);
     }
     assert.equal(seen.length, 3);
+    // OpenAI 兼容端点：裸模型名按唯一声明上游路由，不再一律 404（cccodroid 主仓 #217）
+    const openai = async (model) => {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: "POST", signal: AbortSignal.timeout(5000), headers: { "content-type": "application/json", "x-api-key": "local-test-only" },
+        body: JSON.stringify({ model, max_tokens: 16, stream: false, messages: [{ role: "user", content: "local selftest" }] })
+      });
+      return [response.status, await response.text()];
+    };
+    let [st, text] = await openai("json");
+    assert.equal(st, 200, text);
+    assert.match(text, /LOCAL_OK/);
+    assert.equal(seen.at(-1).model, "json");
+    [st, text] = await openai("nope");
+    assert.equal(st, 404, text);
+    assert.match(text, /not found/i);
+    passed += 2;
+    console.log("PASS openai bare model routed / unknown stays 404");
     // 上游不认推理参数：第一次 400 后去掉重发并记住，第二次直接不带（#84）
     for (const round of [1, 2]) {
       const before = seen.length;
@@ -144,6 +161,24 @@ async function main() {
     }
     passed++;
     console.log("PASS strict upstream; reasoning params dropped after 400, remembered; real errors kept");
+    // 06-路径别名：安卓上 /data/data/<包名> 与 /data/user/N/<包名> 是同一目录的两种写法（绑定挂载，realpath 不归并）。
+    // 配置时记一种写法、卸载时敲另一种，卸载不能因为字符串对不上被拒（installer.cjs 的 sameDir）。
+    {
+      const api = require(path.join(root, "installer.cjs"));
+      const aliasDir = fs.mkdtempSync(path.join(temp, "alias-"));
+      const u = aliasDir.match(/^\/data\/user(?:_de)?\/\d+\//);
+      const other = u ? "/data/data/" + aliasDir.slice(u[0].length) : null;
+      if (other && api.sameDir(aliasDir, other)) {
+        assert.ok(api.insideOrSame(aliasDir, temp));
+        assert.ok(api.underDir(aliasDir, temp));
+        assert.ok(!api.underDir(temp, temp), "自己不算位于自己之下");
+        fs.writeFileSync(path.join(aliasDir, ".ccr-bridge-kit.json"), JSON.stringify({ id: "ccr-bridge-kit", version: api.VERSION, target: other }));
+        assert.doesNotThrow(() => api.loadManifest(aliasDir), "manifest 记 /data/data 写法、用 /data/user/0 写法卸载：要认同一目录");
+        console.log("PASS path alias: /data/data 与 /data/user/N 两种写法认作同一目录");
+      } else {
+        console.log("SKIP path alias: 本机没有 /data/data 别名（CI 或非安卓），无法实测");
+      }
+    }
   } finally {
     if (child && child.exitCode === null) {
       child.kill("SIGTERM");
