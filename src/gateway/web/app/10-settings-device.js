@@ -173,11 +173,13 @@
   }
 
 
-  // 打开更新页时自动查一次：正在查、正在下/装，或 20 秒内刚查过就只刷新显示
+  // 打开更新页时自动查一次：本进程没查过，或距上次检查超过 10 分钟才发 upd_check；
+  // upd_status 本身只读，不会联网。正在查 / 正在下装时只刷新显示。
   async function updOnOpen() {
     await loadUpd();
     const busy = (lastUpd.items || []).some((it) => ["downloading", "installing", "verifying"].includes(it.state));
-    if (lastUpd.checking || busy || Date.now() - (lastUpd.lastCheck || 0) < 20000) return;
+    const fresh = lastUpd.checkedOnce !== false && Date.now() - (lastUpd.lastCheck || 0) < 10 * 60_000;
+    if (lastUpd.checking || busy || fresh) return;
     await post("/api/app/upd_check").catch(() => {});
     followUpd(); setTimeout(loadUpd, 300);
   }

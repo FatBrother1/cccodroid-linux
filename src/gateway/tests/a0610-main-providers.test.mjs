@@ -61,6 +61,26 @@ test("P1-2：改了端点主机又没给新 Key → 旧 Key 清掉；同主机�
   assert.deepEqual(JSON.parse(r2.out), { a: false, b: false, k: "NEW" });
 });
 
+test("P1-2：自定义接口按 origin 比较（协议/端口/模型清单接收方变了都清 Key）", () => {
+  const run = (cfg, body) => {
+    const r = scenario(cfg, body);
+    assert.equal(r.rc, 0, r.err);
+    return JSON.parse(r.out);
+  };
+  const one = (baseUrl, modelsUrl) => ({ "ccapp-providers.json": { active: "custom-1", providers: {
+    "custom-1": { label: "a", baseUrl, modelsUrl, apiKey: "OLD" } } } });
+  // 端口变了
+  assert.deepEqual(run(one("https://a.example:8443/x"), `const a = P.upsertProvider("custom-1", { baseUrl: "https://a.example:9443/x" }); console.log(JSON.stringify({ cleared: !!a.keyCleared }));`), { cleared: true });
+  // 协议变了
+  assert.deepEqual(run(one("https://a.example/x"), `const a = P.upsertProvider("custom-1", { baseUrl: "http://a.example/x" }); console.log(JSON.stringify({ cleared: !!a.keyCleared }));`), { cleared: true });
+  // 对话端点没变，模型清单换了接收方
+  assert.deepEqual(run(one("https://a.example/x", "https://m1.example/models"), `const a = P.upsertProvider("custom-1", { modelsUrl: "https://m2.example/models" }); console.log(JSON.stringify({ cleared: !!a.keyCleared }));`), { cleared: true });
+  // 同源改路径不清
+  assert.deepEqual(run(one("https://a.example/x"), `const a = P.upsertProvider("custom-1", { baseUrl: "https://a.example/y" }); console.log(JSON.stringify({ cleared: !!a.keyCleared }));`), { cleared: false });
+  // 两个端点在集合里互换，整体集合没变，但各自接收方都变了：要清
+  assert.deepEqual(run(one("https://a.example/x", "https://b.example/models"), `const a = P.upsertProvider("custom-1", { baseUrl: "https://b.example/x", modelsUrl: "https://a.example/models" }); console.log(JSON.stringify({ cleared: !!a.keyCleared }));`), { cleared: true });
+});
+
 test("P1-8：老配置没有 nextCustom、最大号被删过，但会话钉选还记着它 → 新接口不复用这个号", () => {
   const r = scenario({
     "ccapp-providers.json": { active: "deepseek", providers: { "custom-1": { baseUrl: "https://a.example", apiKey: "k" } } },

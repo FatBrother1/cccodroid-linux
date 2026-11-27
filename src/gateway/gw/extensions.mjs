@@ -19,8 +19,21 @@ import { RETENTION_DAYS } from "./retention.mjs";
 // 格式随 claude 版本变，自己写迟早写坏。技能目录（~/.claude/skills）例外：它就是一堆文件夹，没有命令。
 // 同一时刻只跑一个改配置的命令，免得两个安装同时写 settings.json。
 let EXT_LOCK = Promise.resolve();
-function extRun(args, timeoutMs = 180000) {
-  const job = EXT_LOCK.then(() => claudeBlocked()).then((blocked) => blocked ? { code: -1, out: "", err: blocked } : new Promise((resolve) => {
+function withExtLock(fn) {
+  const job = EXT_LOCK.then(fn);
+  EXT_LOCK = job.catch(() => {});
+  return job;
+}
+function extExecRaw(args, timeoutMs = 180000) {
+  // 装卸插件、加删 MCP 是应用替用户做的：这次命令改到的当场认下，别下一轮反过来问他（见 userconf.mjs）。命令失败的不认，下一轮照问。
+  // 只认对应的地方：插件只动 plugins/ 和设置里的 enabledPlugins / extraKnownMarketplaces，MCP 只动 .claude.json
+  const writes = ["plugin", "mcp"].includes(args[0]) && !args.includes("list") && !args.includes("get");
+  const appWrote = (ucb) => {
+    if (!writes) return;
+    if (args[0] === "mcp") ucAppWrote([".claude.json"], ucb);
+    else ucAppWrote([".claude/settings.json", ".claude/plugins/"], ucb, { ".claude/settings.json": ["enabledPlugins", "extraKnownMarketplaces"] });
+  };
+  return Promise.resolve().then(() => claudeBlocked()).then((blocked) => blocked ? { code: -1, out: "", err: blocked } : new Promise((resolve) => {
     const [cmd0, args0] = claudeCmd(args);
     const ucb = writes ? ucAppBegin() : null;
     const child = spawn(cmd0, args0, {
@@ -34,16 +47,9 @@ function extRun(args, timeoutMs = 180000) {
     child.on("close", (code) => { clearTimeout(t); appWrote(code === 0 ? ucb : null); resolve({ code, out, err }); });
     child.on("error", (e) => { clearTimeout(t); resolve({ code: -1, out, err: err + e.message }); });
   }));
-  // 装卸插件、加删 MCP 是应用替用户做的：这次命令改到的当场认下，别下一轮反过来问他（见 userconf.mjs）。命令失败的不认，下一轮照问。
-  // 只认对应的地方：插件只动 plugins/ 和设置里的 enabledPlugins / extraKnownMarketplaces，MCP 只动 .claude.json
-  const writes = ["plugin", "mcp"].includes(args[0]) && !args.includes("list") && !args.includes("get");
-  const appWrote = (ucb) => {
-    if (!writes) return;
-    if (args[0] === "mcp") ucAppWrote([".claude.json"], ucb);
-    else ucAppWrote([".claude/settings.json", ".claude/plugins/"], ucb, { ".claude/settings.json": ["enabledPlugins", "extraKnownMarketplaces"] });
-  };
-  EXT_LOCK = job.catch(() => {});
-  return job;
+}
+function extRun(args, timeoutMs = 180000) {
+  return withExtLock(() => extExecRaw(args, timeoutMs));
 }
 const lastJson = (s) => {
   const lines = String(s).trim().split("\n").reverse();
@@ -141,6 +147,17 @@ async function listMcp() {
   return out;
 }
 
+/** 把 stdio 命令按 shell 引号规则切开：双引号内支持 \\" / \\\\，单引号原样；带空格的参数不再被拆碎 */
+export function parseStdioTarget(target) {
+  const out = [];
+  const re = /"((?:\\.|[^"\\])*)"|'([^']*)'|(\S+)/g;
+  for (let m; (m = re.exec(String(target || ""))); ) {
+    if (m[1] != null) out.push(m[1].replace(/\\([\\"])/g, "$1"));
+    else if (m[2] != null) out.push(m[2]);
+    else out.push(m[3]);
+  }
+  return out;
+}
 /** mcp add 的参数拼装（addMcp 与 editMcp 共用；parts 给 stdio 用，还原存量定义时按字段精确传，别再按空白重切） */
 const mcpAddArgs = (transport, name, target, env, headers, parts) => {
   // -e / --header 是可变参数，会把后面的名字吞掉：名字放前面，选项跟在后面、用 -- 收尾
@@ -149,8 +166,8 @@ const mcpAddArgs = (transport, name, target, env, headers, parts) => {
   for (const kv of [].concat(env || [])) if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(kv)) args.push("-e", kv);
   for (const h of [].concat(headers || [])) if (String(h).includes(":")) args.push("--header", String(h));
   if (transport === "stdio") {
-    // 命令行按空白切开；带空格的参数用引号括起来
-    args.push("--", ...(parts || target.match(/"[^"]*"|'[^']*'|\S+/g).map((x) => x.replace(/^(["'])(.*)\1$/, "$2"))));
+    // 命令行按 shell 引号规则切开（与 editMcp 共用 parseStdioTarget，支持双引号内转义 \"/\\ 与单引号）
+    args.push("--", ...(parts || parseStdioTarget(target)));
   }
   return args;
 };
@@ -193,7 +210,8 @@ export async function getMcp(b) {
 /** 编辑 = remove + add-json（claude 的 mcp add / add-json 对同名条目都直接报错，没有 update）。
  *  写回用 add-json：定义整体作为单个 JSON 参数，值里的逗号、等号、引号、换行都不会被切坏，
  *  也不走命令行选项解析（停用/启用已在用这个写法）。add 失败就把旧定义原样加回。 */
-export async function editMcp(b) {
+export function editMcp(b) {
+  return withExtLock(async () => {
   const name = String(b.name || "").trim();
   const off = extOff();
   const disabled = !!(extIdOk(name) && off.mcp[name]);
@@ -226,7 +244,7 @@ export async function editMcp(b) {
     delete nd.command; delete nd.args; delete nd.env;
     if (!Object.keys(nd.headers).length) delete nd.headers;
   } else {
-    const parts = target.match(/"[^"]*"|'[^']*'|\S+/g).map((x) => x.replace(/^(["'])(.*)\1$/, "$2"));
+    const parts = parseStdioTarget(target);
     if (!parts.length) return { ok: false, message: tz("缺少命令或地址") };
     // claude 对 stdio 条目不存 headers（实测 add-json 静默剥掉）：这里显式删，
     // 别让「保存成功」之后令牌悄悄没了（前端在切 transport 时会先弹确认）
@@ -241,15 +259,16 @@ export async function editMcp(b) {
     return saveExtOff(off) ? { ok: true } : { ok: false, message: tz("停用名单写不进去") };
   }
   return execEdit(name, newName, nd, def);
+  });
 }
 
-/** remove → add-json；add 失败就把旧定义原样加回，不丢用户原本的配置 */
+/** remove → add-json（在 editMcp 持有的单把 EXT_LOCK 内原子执行）；add 失败就把旧定义原样加回，不丢用户原本的配置 */
 async function execEdit(name, newName, nd, oldDef) {
-  const rm = await extRun(["mcp", "remove", name], 60000);
+  const rm = await extExecRaw(["mcp", "remove", "-s", "user", name], 60000);
   if (rm.code !== 0) return { ok: false, message: cliMsg(rm) };
-  const r = await extRun(["mcp", "add-json", "-s", "user", newName, JSON.stringify(nd)], 60000);
+  const r = await extExecRaw(["mcp", "add-json", "-s", "user", newName, JSON.stringify(nd)], 60000);
   if (r.code === 0) return { ok: true };
-  const back = await extRun(["mcp", "add-json", "-s", "user", name, JSON.stringify(oldDef)], 60000);
+  const back = await extExecRaw(["mcp", "add-json", "-s", "user", name, JSON.stringify(oldDef)], 60000);
   return { ok: false, message: back.code === 0
     ? tz("保存失败：{msg}，旧配置已原样恢复", { msg: cliMsg(r) })
     : tz("保存失败：{msg}，而且旧配置没能恢复，请手动检查", { msg: cliMsg(r) }) };
@@ -758,7 +777,7 @@ async function importSkill(buf) {
   if (!dirs.length) throw new Error(skipped.map((x) => `${x.name}：${x.why}`).join("；"));
   return { ok: true, dir: dirs.join("、"), dirs, skipped };
 }
-export const _extForTest = { importSkill, zipEntryCount, setSkillMode, disableMcp, enableMcp, forgetMcp, listSkills, listMcp, mcpAddArgs };   // 只给测试用
+export const _extForTest = { importSkill, zipEntryCount, setSkillMode, disableMcp, enableMcp, forgetMcp, listSkills, listMcp, mcpAddArgs, parseStdioTarget };   // 只给测试用
 
 // ── 路由：/api/ext/ ──
 export async function routeExtensions(req, res, u, p) {

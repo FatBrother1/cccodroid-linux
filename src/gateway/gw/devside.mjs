@@ -27,11 +27,11 @@ const NPM_REG = "https://registry.npmjs.org";
 // 不能只信 registry 回来的 integrity —— 能改 integrity 的人也能连 tarball 一起换。
 const NPM_KEYS = {"SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U":"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEY6Ya7W++7aUPzvMTrezH6Ycx3c+HOKYCcNGybJZSCJq/fd7Qa8uuAKtdIkUQtQiEKERhAmE5lMMJhP8OkDOa2g=="};
 const devUpd = {
-  auto: true, channel: "stable", lastCheck: 0, checking: false, error: "",
+  auto: true, channel: "stable", lastCheck: 0, lastAutoCheck: 0, checkedOnce: false, checking: false, error: "",
   app: { id: "cccodroid", name: "cccodroid Steam Deck", current: APP_VERSION, latest: "", state: "unknown", message: "", done: 0, total: 0 },
   claude: { id: "claude", name: "Claude Code", current: "", latest: "", state: "unknown", message: "", done: 0, total: 0 },
 };
-try { Object.assign(devUpd, JSON.parse(fs.readFileSync(DEV_UPD_FILE, "utf8")), { checking: false, error: "" }); devUpd.claude.state = devUpd.claude.state === "installing" ? "unknown" : devUpd.claude.state; } catch {}
+try { Object.assign(devUpd, JSON.parse(fs.readFileSync(DEV_UPD_FILE, "utf8")), { checking: false, checkedOnce: false, error: "" }); devUpd.claude.state = devUpd.claude.state === "installing" ? "unknown" : devUpd.claude.state; } catch {}
 // 应用版本以磁盘上的 VERSION 为准（持久化文件里可能是上一次检查留下的旧值）。
 // 显示名也固定回新名字：旧版写进 ccapp-update.json 的是 "cccodroid"，会被 Object.assign 带回来。
 devUpd.app.id = "cccodroid";
@@ -39,7 +39,7 @@ devUpd.app.name = "cccodroid Steam Deck";
 devUpd.app.current = APP_VERSION;
 devUpd.app.state = devUpd.app.state === "installing" || devUpd.app.state === "downloading" ? "error" : (APP_VERSION ? devUpd.app.state : "unknown");
 if (!APP_VERSION) devUpd.app.message = tz("开发布局：读不到应用版本，跳过应用更新检查");
-const devUpdSave = () => { try { fs.writeFileSync(DEV_UPD_FILE, JSON.stringify(devUpd)); } catch {} };
+const devUpdSave = () => { try { const { checkedOnce: _co, ...disk } = devUpd; fs.writeFileSync(DEV_UPD_FILE, JSON.stringify(disk)); } catch {} };
 const cmpVer = (a, b) => {
   const x = String(a).split(/[^0-9]+/).map(Number), y = String(b).split(/[^0-9]+/).map(Number);
   for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d < 0 ? -1 : 1; }
@@ -166,9 +166,9 @@ async function appCheck(force = false) {
 }
 
 // 检查途中换了渠道：这次的结果是旧渠道的，不能记到新渠道名下；结束后按新渠道再查一次（#136）
-let devUpdAgain = false;
-async function devUpdCheck() {
-  if (devUpd.checking) { devUpdAgain = true; return; }
+let devUpdAgain = false, devUpdAgainAuto = false;
+async function devUpdCheck(manual = true) {
+  if (devUpd.checking) { devUpdAgain = true; if (!manual) devUpdAgainAuto = true; return; }
   devUpd.checking = true; devUpd.error = "";
   const c = devUpd.claude, ch = devUpd.channel;
   await appCheck(true);
@@ -204,10 +204,16 @@ async function devUpdCheck() {
       }
     }
     devUpd.lastCheck = Date.now();
+    if (!manual) devUpd.lastAutoCheck = devUpd.lastCheck;
   } catch (e) { devUpd.error = LINUX ? tz("检查 Claude Code 更新失败：{err}", { err: e.message }) : tz("连不上 downloads.claude.ai：{err}", { err: e.message }); }
   finally {
+    if (!devUpdAgain) devUpd.checkedOnce = true;
     devUpd.checking = false; devUpdSave();
-    if (devUpdAgain) { devUpdAgain = false; setImmediate(devUpdCheck); }
+    if (devUpdAgain) {
+      const nextManual = !devUpdAgainAuto;
+      devUpdAgain = false; devUpdAgainAuto = false;
+      setImmediate(() => devUpdCheck(nextManual));
+    }
   }
 }
 
@@ -400,27 +406,31 @@ async function devUpdInstallApp() {
 
 function devUpdStatus() {
   const { app, claude, ...rest } = devUpd;
-  return { ok: true, ...rest, items: [app, claude] };
+  return { ok: true, appVersion: APP_VERSION, ...rest, items: [app, claude] };
 }
 
-// 自动：启动 1 分钟后、之后每 30 分钟看一眼，距上次检查超过 6 小时就查；有新版且开着自动就装
+// 自动：启动 1 分钟后、之后每 30 分钟看一眼；本进程没查过先静默查一次，
+// 距上次自动检查超过 6 小时再查；有新版且开着自动就装
 if (!PREFIX) {
   const tick = async () => {
-    if (!devUpd.auto || Date.now() - devUpd.lastCheck < 6 * 3600_000) return;
-    await devUpdCheck();
-    if (devUpd.auto && devUpd.claude.state === "available") devUpdInstall();
+    if (devUpd.auto && Date.now() - (devUpd.lastAutoCheck || 0) >= 6 * 3600_000) {
+      await devUpdCheck(false);
+      if (devUpd.auto && devUpd.claude.state === "available") devUpdInstall();
+    } else if (!devUpd.checkedOnce) {
+      await devUpdCheck(true);
+    }
   };
-  setTimeout(tick, 60_000);
-  setInterval(tick, 30 * 60_000);
+  setTimeout(tick, 60_000).unref?.();
+  setInterval(tick, 30 * 60_000).unref?.();
 }
 
 async function devApp(op, b) {
   if (op === "upd_status") {
-    if ((!devUpd.lastCheck || devUpd.app.state === "unknown") && !devUpd.checking) devUpdCheck();
-    else if (!devUpd.claude.current) devUpd.claude.current = await claudeVersionOf(PATHS.claude);
+    // 只读：打开页面/取状态本身不联网；要不要检查由界面显式发 upd_check
+    if (!devUpd.claude.current) devUpd.claude.current = await claudeVersionOf(PATHS.claude);
     return devUpdStatus();
   }
-  if (op === "upd_check") { devUpdCheck(); await new Promise((r) => setTimeout(r, 200)); return devUpdStatus(); }
+  if (op === "upd_check") { devUpdCheck(true); await new Promise((r) => setTimeout(r, 200)); return devUpdStatus(); }
   if (op === "upd_set") {
     if (b.channel === "pinned") return { ok: false, message: tz("开发端不支持固定版本（只跟随 stable / latest）") };
     if (typeof b.auto === "boolean") devUpd.auto = b.auto;

@@ -18,7 +18,7 @@ fs.writeFileSync(cli, `#!${sh}\nfor a in "$@"; do printf '%s\\n' "$a"; done >> '
 const prev = { claude: PATHS.claude, loader: PATHS.loader, claudeLoader: PATHS.claudeLoader };
 PATHS.claude = process.execPath; PATHS.loader = PATHS.claudeLoader = cli;
 const { editMcp, getMcp, _extForTest } = await import("../gw/extensions.mjs");
-const { mcpAddArgs } = _extForTest;
+const { mcpAddArgs, parseStdioTarget } = _extForTest;
 const { extOff, saveExtOff, EXT_OFF_FILE } = await import("../gw/extoff.mjs");
 const H = (r) => path.join(CFG.home, r);
 const put = (f, s) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
@@ -44,6 +44,11 @@ test("mcpAddArgs：stdio 选项顺序与 -- 收尾，parts 直传不重切", () 
   // 带空格的参数：走 parts 时原样保留，重切会把 "a b" 拆成两个
   assert.deepEqual(mcpAddArgs("stdio", "a", "npx pkg", [], [], ["npx", "pkg", "a b"]),
     ["mcp", "add", "-s", "user", "--transport", "stdio", "a", "--", "npx", "pkg", "a b"]);
+});
+
+test("parseStdioTarget：双引号内转义、单引号、带空格参数", () => {
+  assert.deepEqual(parseStdioTarget('npx -y "a b" \'c d\' "q\\\"x"'), ["npx", "-y", "a b", "c d", 'q"x']);
+  assert.deepEqual(parseStdioTarget(""), []);
 });
 
 test("mcpAddArgs：远程 transport 地址是位置参数，-e 不进命令行", () => {
@@ -76,7 +81,7 @@ test("editMcp：改 URL 留空 = 保留原请求头值，点掉的键删掉", as
   const r = await editMcp({ name: "e1", transport: "http", target: "http://new/mcp", env: [], headers: [], dropHeaders: ["X-A"] });
   assert.ok(r.ok, r.message);
   const cs = calls();
-  assert.deepEqual(cs[0], ["mcp", "remove", "e1"], "先 remove 旧的");
+  assert.deepEqual(cs[0], ["mcp", "remove", "-s", "user", "e1"], "先 remove 旧的");
   assert.deepEqual(cs[1].slice(0, 5), ["mcp", "add-json", "-s", "user", "e1"]);
   assert.deepEqual(lastJson(), { type: "http", url: "http://new/mcp", headers: { Authorization: "Bearer tok" } }, "留空的请求头带着原值，点掉的键不在");
 });
@@ -87,7 +92,7 @@ test("editMcp：同名键覆盖、改名、删环境变量；空 env 不写进�
   const r = await editMcp({ name: "e2", newName: "e2x", transport: "stdio", target: "npx -y y", env: ["A=9"], headers: [], dropEnv: ["B"] });
   assert.ok(r.ok, r.message);
   const cs = calls();
-  assert.deepEqual(cs[0], ["mcp", "remove", "e2"]);
+  assert.deepEqual(cs[0], ["mcp", "remove", "-s", "user", "e2"]);
   assert.deepEqual(cs[1].slice(0, 5), ["mcp", "add-json", "-s", "user", "e2x"]);
   const j = lastJson();
   assert.deepEqual(j, { type: "stdio", command: "npx", args: ["-y", "y"], env: { A: "9" } }, "同名覆盖、点掉的删掉、旧值不残留");

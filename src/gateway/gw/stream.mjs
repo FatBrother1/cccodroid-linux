@@ -85,16 +85,18 @@ export const promptTokens = (u) => u
   : 0;
 
 /** 兼容桥往往到流末尾才知道输入用量；开头的 0 只是占位，不能清掉上次的真实值。 */
-function contextUsage(u, flags, sse) {
+function contextUsage(u, flags, sse, atStart = false) {
   const n = promptTokens(u);
   if (!Number.isFinite(n) || n <= 0) return;
   if (flags) {
-    const changed = flags.contextTokens !== n;
-    flags.contextTokens = n; flags.mainCtx = n;
     flags.promptUsage = { ...u };
     const cc = u.cache_creation;
     if (cc?.ephemeral_1h_input_tokens > 0) flags.cache1h = true;
     if (cc?.ephemeral_5m_input_tokens > 0) flags.cache5m = true;
+    // 开头无输出的较小值先留给本请求合并，别把用量条拉回；末尾仍允许真实下降，不取历史最大值。
+    if (atStart && !u.output_tokens && n < flags.contextTokens) return;
+    const changed = flags.contextTokens !== n;
+    flags.contextTokens = n; flags.mainCtx = n;
     if (!changed) return;
   }
   sse({ type: "usage", contextTokens: n, outputTokens: u.output_tokens || 0 });
@@ -191,7 +193,7 @@ export function translate(ev, { sse, onInit, onResult, onReplay, flags, provider
         if (lf) { lf.gotDelta = false; lf.gotThinkDelta = false; }
         if (!ev.parent_tool_use_id && !ev.isSidechain) {
           if (flags) flags.promptUsage = { ...e.message?.usage };
-          contextUsage(e.message?.usage, flags, sse);
+          contextUsage(e.message?.usage, flags, sse, true);
           sse({ type: "phase", phase: "wait" });   // 请求已被接住，模型还没出第一个字
         }
         break;
