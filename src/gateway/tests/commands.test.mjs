@@ -30,3 +30,17 @@ test("名字：字母数字 - _，不许路径和空格", () => {
   for (const ok of ["issue", "pr-review", "a_b", "X1"]) assert.ok(CMD_NAME_RE.test(ok), ok);
   for (const bad of ["../x", "a b", "-x", "", "a/b", "中文", "x".repeat(41)]) assert.ok(!CMD_NAME_RE.test(bad), bad);
 });
+
+test("保留 frontmatter 注释；布尔字面量和空值 + 注释都能写回", () => {
+  const src = "---\ndescription: \"旧说明\" # 保留这句\nargument-hint: 参数 # 提示\nallowed-tools: Bash(git:*)\n---\n正文\n";
+  const c = parseCmd(src);
+  assert.equal(c.description, "旧说明");
+  assert.equal(c.hint, "参数");
+  assert.deepEqual(c.comments, { description: "# 保留这句", hint: "# 提示" });
+  const out = formatCmd({ description: "true", hint: "", body: "正文", extra: c.extra, comments: c.comments });
+  assert.match(out, /description: "true" # 保留这句/);
+  assert.match(out, /argument-hint: +# 提示/);
+  assert.equal(parseCmd(out).description, "true");
+  assert.equal(parseCmd(out).hint, "");
+  assert.deepEqual(parseCmd(out).comments, c.comments);
+});

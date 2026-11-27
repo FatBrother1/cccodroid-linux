@@ -98,13 +98,18 @@ export function setPermMode(mode, { persist = true } = {}) {
 // 存中文键 + 变量，界面用同一份词典翻（状态经 SSE 下发，不经过 sendJson 的按请求翻译）
 export const RECOVER_WARNS = [];
 const warnRecover = (key, vars) => { if (!RECOVER_WARNS.some((w) => w.key === key)) RECOVER_WARNS.push({ key, vars: vars || {} }); };
+function holdForStorage(q) {
+  q.held = q.storageHold = true;
+  warnRecover("读取历史失败：{msg}", { msg: "I/O" });
+}
 export function snapshot() {
   return {
     run: runInfo(latestRun()),           // 旧字段：最近开始的那一轮
     runs: runList().map(runInfo),
     maxParallel: maxParallel(),
     tamper: tamperPending(),           // 应用文件被改过、已还原：界面提示一次（见 tamper.mjs）
-    queue: QUEUE.map((q) => ({ id: q.id, cid: q.cid, text: q.message.slice(0, 500), sessionId: q.sessionId, follow: q.follow, at: q.at, held: !!q.held, intr: !!q.intr, ...(q.sched ? { sched: true } : {}) })),
+    queue: QUEUE.map((q) => ({ id: q.id, cid: q.cid, text: q.message.slice(0, 500), sessionId: q.sessionId, follow: q.follow, at: q.at, held: !!q.held, intr: !!q.intr,
+      ...(q.sched ? { sched: true } : {}), ...(q.held && q.storageHold ? { storageHold: true } : {}) })),
     provider: PROVIDER.id,
     model: SETTINGS.model || PROVIDER.defaultModel || null,
     lastSessionId: LAST_SESSION ? LAST_SESSION.id : null,
@@ -260,10 +265,13 @@ function restoreQueue(m, commit) {
   for (const q of Array.isArray(m.queue) ? m.queue : []) {
     if (!q || !q.id || typeof q.message !== "string") continue;
     if (!q.sessionId && q.follow && RUN_SESSIONS.get(q.follow)) q.sessionId = RUN_SESSIONS.get(q.follow);
-    // 会话已经删了（进了回收站）：这条再也看不到、点不了 ⚡，留着只会让 queued 一直不为 0，工具包更新永远等「任务结束」（群友 10-31）
-    if (q.sessionId && !findSessionFile(q.sessionId)) { log(`  会话 ${q.sessionId} 已不在，丢掉它排着的一条消息`); continue; }
+    // 确认会话已删才丢；目录暂时读不了时挂起保留，不能把唯一的待发正文从磁盘抹掉
+    const at = q.sessionId ? sessionPresence(q.sessionId) : "present";
+    if (at === "missing") { log(`  会话 ${q.sessionId} 已不在，丢掉它排着的一条消息`); continue; }
     if (QUEUE.some((x) => x.id === q.id)) continue;
-    QUEUE.push({ ...q, held: true, intr: true });   // intr：前端据此说「被系统中断」而不是「点了停止」
+    const restored = { ...q, held: true, intr: true };   // intr：前端据此说「被系统中断」而不是「点了停止」
+    if (at === "unreadable") holdForStorage(restored);
+    QUEUE.push(restored);
   }
   if (QUEUE.length) log(`  排队的 ${QUEUE.length} 条消息已放回队列（挂起，等用户点 ⚡）`);
   // 中断记录已落盘：标记换成只剩排队消息的新版本（没有排队的就删掉）；写不上就留着旧的，下次再来
@@ -469,11 +477,12 @@ function idleFire(sid) {
 }
 
 /** 有空位就从队列里挑能跑的：车道空闲、且是这条车道上排在最前的（同一会话不许插队、不许同时跑两轮） */
-/** 会话确实没了：会话目录读得了、里面却找不到它。目录整个读不了（存储出错）不算——那时丢消息就是误删（同 195-Y.8） */
-export function sessionGone(sid) {
-  if (findSessionFile(sid)) return false;
-  try { fs.readdirSync(PATHS.projects); return true; } catch { return false; }
+/** 会话在不在：present / missing / unreadable。目录整个读不了（存储出错）不能当成已删除。 */
+export function sessionPresence(sid) {
+  if (findSessionFile(sid)) return "present";
+  try { fs.readdirSync(PATHS.projects); return "missing"; } catch { return "unreadable"; }
 }
+export function sessionGone(sid) { return sessionPresence(sid) === "missing"; }
 export function pump() {
   const blocked = new Set();
   for (let i = 0; i < QUEUE.length && RUNS.size < maxParallel(); ) {
@@ -483,7 +492,14 @@ export function pump() {
     // 会话文件已经不在了（别的途径删的）：同启动恢复那道检查，不拿它去 --resume（195-W.1）。
     // 这次运行里起过的会话不算：claude 写记录文件比 init 晚，刚开的会话接着排的消息不能当成删了
     const qsid = sidForItem(q);
-    if (qsid && !SESSIONS.has(qsid) && sessionGone(qsid)) { log(`  会话 ${qsid} 已不在，丢掉它排着的一条消息`); QUEUE.splice(i, 1); saveRunMark(); publishState(); continue; }
+    if (qsid) {
+      const at = sessionPresence(qsid);
+      if (at === "missing" && !SESSIONS.has(qsid)) {
+        log(`  会话 ${qsid} 已不在，丢掉它排着的一条消息`);
+        QUEUE.splice(i, 1); publishState(); continue;
+      }
+      if (at === "unreadable") { holdForStorage(q); publishState(); i++; continue; }
+    }
     const lane = laneOfItem(q), key = sidOfLane(lane) || lane;
     if (blocked.has(key) || laneRun(lane)) { blocked.add(key); i++; continue; }
     blocked.add(key);
@@ -642,9 +658,11 @@ export async function routeQueue(req, res, u, p) {
     else if (act === "promote") {          // ⚡ 插话：塞进正在跑的这一轮（不打断）；塞不进就挪到队首
       const it = QUEUE.splice(i, 1)[0];
       it.held = false;                      // 挂起的消息靠这个放行
+      const storageHold = it.storageHold;
+      delete it.storageHold;
       const lr = laneRun(laneOfItem(it));
-      // ⚡ 也一样：执行配置变了就宁可排队等这一轮结束，不要把消息塞进用旧接口/旧模型的进程
-      if (!(lr && sameExec(lr, it) && tryInject(lr, it))) {
+      // 读错后让 pump 先核对存储，不能绕过检查直接插话；执行配置变了也仍走排队
+      if (!(lr && !storageHold && sameExec(lr, it) && tryInject(lr, it))) {
         QUEUE.unshift(it);
         // 那一轮答完了、只剩后台任务：这条只能等它结束。用户点了 ⚡ 就是不等——连同后台任务结束它，收尾后这条接着发。
         // 输入还开着也要结束：配置已经变了，继续等它不会变成能注入的状态（#139 回归）
